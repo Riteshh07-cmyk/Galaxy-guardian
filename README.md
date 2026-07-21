@@ -1,70 +1,381 @@
-# Galaxy Guardian – Gesture Controlled Space Shooter
+# 🚀 Galaxy Guardian
+## Gesture Controlled Space Shooter Game
 
-**Status:** 🚧 Step 1 of build in progress (project setup + window test)
+> A futuristic AI-powered space shooter controlled using real-time hand gestures.
 
-## Current folder structure
+Galaxy Guardian is a computer vision-based arcade game where players control a spaceship using hand movements detected through a webcam.
+
+Built using **Python, Pygame, OpenCV, MediaPipe, and NumPy**, this project combines Artificial Intelligence, Game Development, and Human-Computer Interaction.
+
+---
+
+# 🎮 Features
+
+## ✋ AI Gesture Control
+- Real-time hand tracking using MediaPipe
+- Webcam-based control system
+- Gesture recognition
+- Controller-free gameplay experience
+
+## 🚀 Game Features
+- Player spaceship
+- Enemy spacecrafts
+- Shooting mechanics
+- Collision detection
+- Health system
+- Score tracking
+- Boss battles
+- Power-ups
+
+## 🌌 Visual Effects
+- Animated space background
+- Starfield effect
+- Explosion animations
+- Particle effects
+- Smooth 60 FPS gameplay
+
+## 🔊 Audio System
+- Background music
+- Shooting sounds
+- Explosion effects
+- UI sounds
+
+---
+
+# 🧠 How It Works
+
+Galaxy Guardian uses computer vision to convert your hand movements into game controls.
+
+```
+Webcam
+   |
+   ↓
+OpenCV Frame Processing
+   |
+   ↓
+MediaPipe Hand Detection
+   |
+   ↓
+Gesture Recognition
+   |
+   ↓
+Player Movement / Actions
+   |
+   ↓
+Pygame Game Engine
+```
+
+---
+
+# 🛠️ Technologies Used
+
+| Technology | Usage |
+|------------|-------|
+| Python | Core programming language |
+| Pygame | Game development framework |
+| OpenCV | Webcam and image processing |
+| MediaPipe | Hand tracking AI |
+| NumPy | Mathematical calculations |
+
+---
+
+# 📂 Project Structure
 
 ```
 galaxy_guardian/
+
+│
 ├── assets/
+│   │
 │   ├── player/
+│   │   └── spaceship images
+│   │
 │   ├── enemy/
+│   │   └── enemy sprites
+│   │
 │   ├── boss/
+│   │   └── boss images
+│   │
 │   ├── background/
+│   │   └── space backgrounds
+│   │
 │   ├── effects/
+│   │   └── explosions and particles
+│   │
 │   ├── sounds/
+│   │   └── music and effects
+│   │
 │   ├── fonts/
+│   │
 │   └── ui/
+│       └── buttons and interface
+│
 ├── main.py
 ├── settings.py
 ├── requirements.txt
 └── README.md
 ```
 
-## Step 1 Setup Instructions
+---
 
-1. **Install Python 3.10 or 3.11** (MediaPipe does not yet support every
-   version of 3.12/3.13, so stick to 3.10/3.11 to avoid install headaches).
-   Check your version:
-   ```
-   python --version
-   ```
+# ⚙️ Installation
 
-2. **Open a terminal inside the `galaxy_guardian` folder.**
+## Requirements
 
-3. **Create a virtual environment** (keeps this project's packages separate
-   from everything else on your machine):
-   ```
-   python -m venv venv
-   ```
+Recommended Python version:
 
-4. **Activate it:**
-   - Windows (PowerShell): `venv\Scripts\Activate.ps1`
-   - Windows (cmd.exe): `venv\Scripts\activate.bat`
-   - macOS / Linux: `source venv/bin/activate`
+```
+Python 3.10 or Python 3.11
+```
 
-   You'll know it worked because your terminal prompt will show `(venv)`
-   at the start of the line.
+MediaPipe compatibility is better with Python 3.10/3.11.
 
-5. **Install dependencies:**
-   ```
-   pip install -r requirements.txt
-   ```
+---
 
-6. **Run the game window test:**
-   ```
-   python main.py
-   ```
+## 1. Clone Repository
 
-   ✅ **Expected result:** a 1280×720 dark space-colored window opens,
-   titled "Galaxy Guardian", showing an FPS counter in the top-left
-   that should read close to 60. Pressing `ESC` or clicking the window's
-   close button should close it cleanly with no errors in the terminal.
+```bash
+git clone https://github.com/yourusername/galaxy_guardian.git
+```
 
-   ❌ If it doesn't run: copy the exact error text and we'll debug it
-   before moving on — don't move to Step 2 until this works.
+Move into project folder:
 
-## What's next (Step 2)
+```bash
+cd galaxy_guardian
+```
 
-Once you confirm `main.py` runs cleanly, we'll add an animated starfield
-background and the main menu skeleton.
+---
+
+## 2. Create Virtual Environment
+
+```bash
+python -m venv venv
+```
+
+---
+
+## 3. Activate Virtual Environment
+
+### Windows PowerShell
+
+```bash
+venv\Scripts\Activate.ps1
+```
+
+### Windows CMD
+
+```bash
+venv\Scripts\activate.bat
+```
+
+### Linux / macOS
+
+```bash
+source venv/bin/activate
+```
+
+After activation:
+
+```
+(venv)
+```
+
+will appear in your terminal.
+
+---
+
+## 4. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+# ▶️ Run The Game
+
+Start Galaxy Guardian:
+
+```bash
+python main.py
+```
+
+Expected result:
+
+✅ 1280×720 game window opens  
+✅ Title: "Galaxy Guardian"  
+✅ FPS counter visible  
+✅ Smooth gameplay at around 60 FPS  
+
+Exit:
+
+```
+ESC
+```
+
+or close the game window.
+
+---
+
+# 🎮 Controls
+
+| Action | Input |
+|--------|-------|
+| Move Spaceship | Hand Movement |
+| Shoot | Hand Gesture |
+| Pause | ESC |
+| Exit | Close Window |
+
+---
+
+# 🖐️ Gesture System
+
+The game detects hand landmarks using MediaPipe.
+
+Process:
+
+1. Webcam captures your hand
+2. OpenCV processes frames
+3. MediaPipe identifies hand points
+4. Gesture algorithm calculates movement
+5. Commands are sent to the game
+
+---
+
+# 🗺️ Development Roadmap
+
+## ✅ Step 1: Project Setup
+
+Completed:
+
+- Project structure created
+- Virtual environment setup
+- Pygame window created
+- FPS system added
+
+
+---
+
+## 🚧 Step 2: Game Foundation
+
+Upcoming:
+
+- [ ] Animated starfield background
+- [ ] Main menu
+- [ ] Player spaceship
+- [ ] Movement system
+
+
+---
+
+## 🔥 Step 3: Gesture Integration
+
+Upcoming:
+
+- [ ] Webcam integration
+- [ ] MediaPipe setup
+- [ ] Hand landmark detection
+- [ ] Gesture controls
+
+
+---
+
+## 👾 Step 4: Combat System
+
+Upcoming:
+
+- [ ] Enemy spawning
+- [ ] Shooting system
+- [ ] Bullet collision
+- [ ] Score system
+- [ ] Health bar
+
+
+---
+
+## 👑 Step 5: Advanced Features
+
+Upcoming:
+
+- [ ] Boss fights
+- [ ] Multiple levels
+- [ ] Power-ups
+- [ ] Leaderboard
+- [ ] Advanced AI enemies
+
+
+---
+
+# 📸 Screenshots
+
+Screenshots will be added after major milestones.
+
+Example:
+
+```
+screenshots/
+
+├── main_menu.png
+├── gameplay.png
+└── boss_fight.png
+```
+
+---
+
+# 🤝 Contributing
+
+Contributions and suggestions are welcome.
+
+Steps:
+
+```bash
+git checkout -b feature-name
+```
+
+Make changes and commit:
+
+```bash
+git add .
+git commit -m "Added new feature"
+```
+
+Push:
+
+```bash
+git push origin feature-name
+```
+
+Create a Pull Request.
+
+---
+
+# 👨‍💻 Developer
+
+## Ritesh Mulik
+
+Computer Engineering Student
+
+Interested in:
+
+- 💻 Software Development
+- 🤖 Artificial Intelligence
+- 🎮 Game Development
+- 👁️ Computer Vision
+
+
+---
+
+# ⭐ Support
+
+If you like this project:
+
+⭐ Star the repository  
+🍴 Fork the project  
+🚀 Share your feedback
+
+
+---
+
+# 📜 License
+
+This project is created for educational and experimental purposes.
