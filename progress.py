@@ -7,6 +7,7 @@ DEFAULT_PROGRESS = {
     "credits": 0,
     "unlocked_ships": ["guardian"],
     "selected_ship": "guardian",
+    "difficulty": "normal",
 }
 
 

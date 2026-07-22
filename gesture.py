@@ -195,6 +195,8 @@ class GestureRecognizer:
             return "open_palm"
         if not any([thumb, index, middle, ring, pinky]):
             return "fist"
+        if thumb and index and not middle and not ring and not pinky:
+            return "finger_gun"
         if index and middle and not ring and not pinky:
             return "victory"
         if thumb and not any([index, middle, ring, pinky]):
@@ -230,3 +232,48 @@ class GestureRecognizer:
             self.confirmed_gesture = raw_gesture
 
         return self.confirmed_gesture
+
+
+class SwipeDetector:
+    """
+    Detects a fast horizontal hand swipe (left or right) by watching the
+    tracked hand's x position over a short rolling time window. Used for
+    weapon switching -- deliberately requires a LARGE, FAST motion so
+    normal flight movement doesn't accidentally trigger it.
+    """
+
+    def __init__(self, window_seconds=0.35, min_distance_norm=0.24, cooldown_seconds=0.6):
+        self.window_seconds = window_seconds
+        self.min_distance_norm = min_distance_norm
+        self.cooldown_seconds = cooldown_seconds
+        self.cooldown_timer = 0.0
+        self.elapsed = 0.0
+        self.samples = deque()  # (elapsed_time, x_norm)
+
+    def update(self, dt, hand_x_norm):
+        """Call once per frame. hand_x_norm: 0.0-1.0 x position of the
+        tracked hand, or None if no hand visible. Returns "left", "right",
+        or None."""
+        self.elapsed += dt
+        self.cooldown_timer = max(0.0, self.cooldown_timer - dt)
+
+        if hand_x_norm is None:
+            self.samples.clear()
+            return None
+
+        self.samples.append((self.elapsed, hand_x_norm))
+        while self.samples and self.elapsed - self.samples[0][0] > self.window_seconds:
+            self.samples.popleft()
+
+        if self.cooldown_timer > 0 or len(self.samples) < 2:
+            return None
+
+        oldest_x = self.samples[0][1]
+        newest_x = self.samples[-1][1]
+        dx = newest_x - oldest_x
+
+        if abs(dx) >= self.min_distance_norm:
+            self.cooldown_timer = self.cooldown_seconds
+            self.samples.clear()
+            return "right" if dx > 0 else "left"
+        return None

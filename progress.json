@@ -1,0 +1,12 @@
+{
+  "credits": 1000993,
+  "unlocked_ships": [
+    "guardian",
+    "interceptor",
+    "juggernaut",
+    "phantom",
+    "vindicator"
+  ],
+  "selected_ship": "vindicator",
+  "difficulty": "normal"
+}

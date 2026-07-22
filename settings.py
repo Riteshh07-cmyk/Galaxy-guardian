@@ -46,6 +46,14 @@ MUSIC_MENU_PATH = f"{SOUND_ASSET_DIR}/menu_theme.wav"
 MUSIC_ACTION_PATH = f"{SOUND_ASSET_DIR}/action_theme.wav"
 DEFAULT_MUSIC_VOLUME = 0.6
 
+DIFFICULTY_LEVELS = {
+    "easy":      {"label": "EASY",      "spawn_mult": 1.35, "speed_mult": 0.80, "score_mult": 0.8},
+    "normal":    {"label": "NORMAL",    "spawn_mult": 1.00, "speed_mult": 1.00, "score_mult": 1.0},
+    "hard":      {"label": "HARD",      "spawn_mult": 0.75, "speed_mult": 1.20, "score_mult": 1.3},
+    "nightmare": {"label": "NIGHTMARE", "spawn_mult": 0.55, "speed_mult": 1.50, "score_mult": 1.6},
+}
+DIFFICULTY_ORDER = ["easy", "normal", "hard", "nightmare"]
+
 # ---------------------------------------------------------------------------
 # CAMERA / GESTURE (used starting Step 3)
 # ---------------------------------------------------------------------------
@@ -61,3 +69,7 @@ PLAYER_START_LIVES = 3
 SHOOT_COOLDOWN_SECONDS = 0.2
 SHIELD_DURATION_SECONDS = 5
 SHIELD_COOLDOWN_SECONDS = 10
+BOOST_DURATION_SECONDS = 3
+BOOST_COOLDOWN_SECONDS = 6
+BOOST_SPEED_MULTIPLIER = 2.6      # ship movement speed while boosting
+BOOST_BG_SPEED_MULTIPLIER = 3.5   # starfield/background scroll speed while boosting

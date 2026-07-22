@@ -37,8 +37,8 @@ class Star:
         self.twinkle_phase = random.uniform(0, math.tau)
         self.twinkle_speed = random.uniform(1.5, 4.0)
 
-    def update(self, dt):
-        self.y += self.speed * dt
+    def update(self, dt, speed_mult=1.0):
+        self.y += self.speed * speed_mult * dt
         if self.y > settings.SCREEN_HEIGHT:
             self.y = 0
             self.x = random.uniform(0, settings.SCREEN_WIDTH)
@@ -64,8 +64,8 @@ class Planet:
         )
         self.has_ring = random.random() < 0.5
 
-    def update(self, dt):
-        self.y += self.speed * dt
+    def update(self, dt, speed_mult=1.0):
+        self.y += self.speed * speed_mult * dt
         if self.y - self.radius > settings.SCREEN_HEIGHT:
             self.__init__()  # respawn as a "new" planet above the screen
             self.y = -self.radius
@@ -116,9 +116,9 @@ class Asteroid:
             pts.append((math.cos(angle) * r, math.sin(angle) * r))
         return pts
 
-    def update(self, dt):
-        self.y += self.speed_y * dt
-        self.x += self.speed_x * dt
+    def update(self, dt, speed_mult=1.0):
+        self.y += self.speed_y * speed_mult * dt
+        self.x += self.speed_x * speed_mult * dt
         self.rotation += self.rotation_speed * dt
         if self.y - self.size > settings.SCREEN_HEIGHT:
             self.__init__()
@@ -152,13 +152,13 @@ class Starfield:
         self.planets = [Planet() for _ in range(num_planets)]
         self.asteroids = [Asteroid() for _ in range(num_asteroids)]
 
-    def update(self, dt):
+    def update(self, dt, speed_mult=1.0):
         for star in self.stars:
-            star.update(dt)
+            star.update(dt, speed_mult)
         for planet in self.planets:
-            planet.update(dt)
+            planet.update(dt, speed_mult)
         for asteroid in self.asteroids:
-            asteroid.update(dt)
+            asteroid.update(dt, speed_mult)
 
     def draw(self, surface):
         surface.fill(settings.DARK_SPACE)

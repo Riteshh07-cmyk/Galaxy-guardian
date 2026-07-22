@@ -68,26 +68,31 @@ WEAPON_TYPES = {
     "normal": {
         "label": "NORMAL LASER",
         "cooldown": 0.20,
+        "color": settings.NEON_GREEN,
         "spawn_fn": lambda x, y: _straight_pattern(x, y, count=1, spacing=0, color=settings.NEON_GREEN),
     },
     "double": {
         "label": "DOUBLE LASER",
         "cooldown": 0.22,
+        "color": settings.NEON_BLUE,
         "spawn_fn": lambda x, y: _straight_pattern(x, y, count=2, spacing=16, color=settings.NEON_BLUE),
     },
     "triple": {
         "label": "TRIPLE LASER",
         "cooldown": 0.26,
+        "color": settings.NEON_PURPLE,
         "spawn_fn": lambda x, y: _straight_pattern(x, y, count=3, spacing=14, color=settings.NEON_PURPLE),
     },
     "spread": {
         "label": "SPREAD SHOT",
         "cooldown": 0.32,
+        "color": settings.GOLD,
         "spawn_fn": lambda x, y: _spread_pattern(x, y, count=5, spread_degrees=50, color=settings.GOLD),
     },
     "rapid": {
         "label": "RAPID FIRE",
         "cooldown": 0.08,
+        "color": (255, 240, 120),
         "spawn_fn": lambda x, y: _straight_pattern(
             x, y, count=1, spacing=0, color=(255, 240, 120), speed=900, width=3, height=14, damage=1
         ),
@@ -95,6 +100,7 @@ WEAPON_TYPES = {
     "plasma": {
         "label": "PLASMA BEAM",
         "cooldown": 0.40,
+        "color": (255, 60, 200),
         "spawn_fn": lambda x, y: _straight_pattern(
             x, y, count=1, spacing=0, color=(255, 60, 200), speed=560, width=14, height=30, damage=3
         ),
@@ -120,3 +126,8 @@ def get_cooldown(weapon_name):
 def get_label(weapon_name):
     weapon = WEAPON_TYPES.get(weapon_name, WEAPON_TYPES["normal"])
     return weapon["label"]
+
+
+def get_color(weapon_name):
+    weapon = WEAPON_TYPES.get(weapon_name, WEAPON_TYPES["normal"])
+    return weapon["color"]

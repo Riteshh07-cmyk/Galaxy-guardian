@@ -17,26 +17,30 @@ like Step 7 -- just now it fires whatever weapon is currently selected.
 """
 
 import sys
+import random
 import pygame
 
 import settings
 from background import Starfield
 from menu import MainMenu
 from camera import CameraManager
-from gesture import HandTracker, GestureRecognizer
+from gesture import HandTracker, GestureRecognizer, SwipeDetector
 from player import Player
 from bullet import Bullet
 import weapons
 from enemy import spawn_random_enemy
 from audio import AudioManager
+from particles import ParticleSystem
+from hud import HUD
 import highscore
 import progress
 import ships
-from screens import ControlsScreen, HighScoresScreen, SettingsScreen, HangarScreen
+from screens import ControlsScreen, HighScoresScreen, SettingsScreen, HangarScreen, PauseScreen, GameOverScreen
 from utils import cv2_frame_to_pygame_surface
 
 ENEMY_SPAWN_INTERVAL = 1.4
 LEVEL_SCORE_STEP = 500
+KEYBOARD_MOVE_SPEED = 420
 
 
 STATE_MENU = "menu"
@@ -45,6 +49,8 @@ STATE_CONTROLS = "controls"
 STATE_HIGH_SCORES = "high_scores"
 STATE_SETTINGS = "settings"
 STATE_HANGAR = "hangar"
+STATE_PAUSED = "paused"
+STATE_GAME_OVER = "game_over"
 
 PREVIEW_WIDTH = 240
 PREVIEW_HEIGHT = 180
@@ -80,13 +86,25 @@ def main():
     high_scores_screen = HighScoresScreen()
     settings_screen = SettingsScreen()
     hangar_screen = HangarScreen()
+    pause_screen = PauseScreen()
+    game_over_screen = GameOverScreen()
     audio_manager = AudioManager()
     high_scores_data = highscore.load_high_scores()
+    settings_return_state = STATE_MENU
+    game_over_stats = {}
 
     camera = CameraManager()
     camera.start()
     hand_tracker = HandTracker(max_num_hands=2)
     gesture_recognizer = GestureRecognizer()
+    swipe_detector = SwipeDetector()
+    particles = ParticleSystem()
+    hud = HUD()
+
+    def make_new_run():
+        fresh_player = Player(progress_data["selected_ship"])
+        particles.clear()
+        return fresh_player, [], [], ENEMY_SPAWN_INTERVAL, 0, 1, 0.0
 
     state = STATE_MENU
     running = True
@@ -124,15 +142,19 @@ def main():
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    if state == STATE_PLAYING:
+                    if state in (STATE_PLAYING, STATE_PAUSED):
                         state = STATE_MENU
-                        bullets = []
-                        enemies = []
-                        enemy_spawn_timer = ENEMY_SPAWN_INTERVAL
-                    elif state in (STATE_CONTROLS, STATE_HIGH_SCORES, STATE_SETTINGS, STATE_HANGAR):
+                    elif state == STATE_SETTINGS:
+                        state = settings_return_state
+                    elif state in (STATE_CONTROLS, STATE_HIGH_SCORES, STATE_HANGAR, STATE_GAME_OVER):
                         state = STATE_MENU
                     else:
                         running = False
+                elif event.key == pygame.K_p:
+                    if state == STATE_PLAYING:
+                        state = STATE_PAUSED
+                    elif state == STATE_PAUSED:
+                        state = STATE_PLAYING
                 elif event.key == pygame.K_F3:
                     debug_mode = not debug_mode
                 elif state == STATE_PLAYING and event.key in WEAPON_KEYS:
@@ -143,13 +165,7 @@ def main():
                     action = main_menu.handle_click(mouse_pos)
                     if action == "play":
                         state = STATE_PLAYING
-                        player = Player(progress_data["selected_ship"])
-                        bullets = []
-                        enemies = []
-                        enemy_spawn_timer = ENEMY_SPAWN_INTERVAL
-                        score = 0
-                        level = 1
-                        level_up_timer = 0.0
+                        player, bullets, enemies, enemy_spawn_timer, score, level, level_up_timer = make_new_run()
                     elif action == "exit":
                         running = False
                     elif action == "controls":
@@ -158,6 +174,7 @@ def main():
                         high_scores_data = highscore.load_high_scores()
                         state = STATE_HIGH_SCORES
                     elif action == "settings":
+                        settings_return_state = STATE_MENU
                         state = STATE_SETTINGS
                     elif action == "hangar":
                         state = STATE_HANGAR
@@ -169,10 +186,29 @@ def main():
                         state = STATE_MENU
                 elif state == STATE_SETTINGS:
                     if settings_screen.handle_click(mouse_pos) == "back":
-                        state = STATE_MENU
+                        state = settings_return_state
                 elif state == STATE_HANGAR:
                     action, progress_data = hangar_screen.handle_click(mouse_pos, progress_data)
                     if action == "back":
+                        state = STATE_MENU
+                elif state == STATE_PAUSED:
+                    action = pause_screen.handle_click(mouse_pos)
+                    if action == "resume":
+                        state = STATE_PLAYING
+                    elif action == "restart":
+                        player, bullets, enemies, enemy_spawn_timer, score, level, level_up_timer = make_new_run()
+                        state = STATE_PLAYING
+                    elif action == "settings":
+                        settings_return_state = STATE_PAUSED
+                        state = STATE_SETTINGS
+                    elif action == "main_menu":
+                        state = STATE_MENU
+                elif state == STATE_GAME_OVER:
+                    action = game_over_screen.handle_click(mouse_pos)
+                    if action == "restart":
+                        player, bullets, enemies, enemy_spawn_timer, score, level, level_up_timer = make_new_run()
+                        state = STATE_PLAYING
+                    elif action == "main_menu":
                         state = STATE_MENU
 
             if state == STATE_SETTINGS:
@@ -181,7 +217,9 @@ def main():
         # =====================================================================
         # 2. UPDATE -- figure out what's happening this frame
         # =====================================================================
-        starfield.update(dt)
+        bg_speed_mult = settings.BOOST_BG_SPEED_MULTIPLIER if (state == STATE_PLAYING and player.is_boosting) else 1.0
+        starfield.update(dt, bg_speed_mult)
+        hud.update(dt)
         if state == STATE_MENU:
             main_menu.update(dt, mouse_pos)
         elif state == STATE_CONTROLS:
@@ -192,6 +230,10 @@ def main():
             settings_screen.update(dt, mouse_pos)
         elif state == STATE_HANGAR:
             hangar_screen.update(dt, mouse_pos)
+        elif state == STATE_PAUSED:
+            pause_screen.update(dt, mouse_pos)
+        elif state == STATE_GAME_OVER:
+            game_over_screen.update(dt, mouse_pos)
 
         if state == STATE_PLAYING:
             audio_manager.play_action_music()
@@ -244,16 +286,52 @@ def main():
                 target_y = index_fingertip_norm[1] * settings.SCREEN_HEIGHT
             else:
                 target_x, target_y = None, None
-            player.update(dt, target_x, target_y)
 
-            # --- Shooting: pinch fires, gated by the cooldown ---
-            if current_gesture == "pinch" and player.can_shoot():
+            # --- Keyboard backup controls ---
+            keys_held = pygame.key.get_pressed()
+            kb_dx, kb_dy = 0.0, 0.0
+            if keys_held[pygame.K_LEFT] or keys_held[pygame.K_a]:
+                kb_dx -= KEYBOARD_MOVE_SPEED
+            if keys_held[pygame.K_RIGHT] or keys_held[pygame.K_d]:
+                kb_dx += KEYBOARD_MOVE_SPEED
+            if keys_held[pygame.K_UP] or keys_held[pygame.K_w]:
+                kb_dy -= KEYBOARD_MOVE_SPEED
+            if keys_held[pygame.K_DOWN] or keys_held[pygame.K_s]:
+                kb_dy += KEYBOARD_MOVE_SPEED
+
+            if (current_gesture == "open_palm" or keys_held[pygame.K_LSHIFT]) and player.can_activate_boost():
+                player.activate_boost()
+
+            player.update(dt, target_x, target_y, kb_dx, kb_dy)
+
+            if player.is_boosting:
+                trail_x = player.x + random.uniform(-6, 6)
+                trail_y = player.y + player.height / 2
+                particles.spawn_boost_trail(trail_x, trail_y, player.ship_color)
+
+            # --- Shooting: pinch gesture (thumb + index touching) OR Space,
+            # gated by cooldown ---
+            if (current_gesture == "pinch" or keys_held[pygame.K_SPACE]) and player.can_shoot():
                 nose_x, nose_y = player.get_nose_position()
                 new_bullets = weapons.spawn_bullets(player.weapon_name, nose_x, nose_y)
                 for b in new_bullets:
                     b.damage = max(1, round(b.damage * player.damage_mult))
                 bullets.extend(new_bullets)
                 player.trigger_shot()
+                muzzle_color = new_bullets[0].color if new_bullets else settings.NEON_GREEN
+                particles.spawn_muzzle_burst(nose_x, nose_y, muzzle_color)
+
+            # --- Shield: fist gesture ---
+            if current_gesture == "fist" and player.can_activate_shield():
+                player.activate_shield()
+
+            # --- Weapon switch: fast horizontal swipe ---
+            swipe_x = index_fingertip_norm[0] if index_fingertip_norm is not None else None
+            swipe_direction = swipe_detector.update(dt, swipe_x)
+            if swipe_direction == "right":
+                player.cycle_weapon(1)
+            elif swipe_direction == "left":
+                player.cycle_weapon(-1)
 
             for bullet in bullets:
                 bullet.update(dt)
@@ -284,26 +362,39 @@ def main():
                         bullet.alive = False
                         if not enemy.alive:
                             score += enemy.score_value
+                            particles.spawn_explosion(enemy.x, enemy.y, color=enemy.color)
+                        else:
+                            particles.spawn_hit_spark(bullet.x, bullet.y, color=bullet.color)
                         break
             bullets = [b for b in bullets if b.alive]
 
             for enemy in enemies:
-                if enemy.get_rect().colliderect(player.get_rect()) and player.invincible_timer <= 0:
-                    player.take_damage(enemy.collision_damage)
-                    enemy.alive = False
+                if enemy.get_rect().colliderect(player.get_rect()):
+                    if player.is_boosting:
+                        # Ramming speed: plow straight through, destroy the
+                        # enemy, take no damage (player.take_damage() would
+                        # also no-op during boost, but we skip it entirely
+                        # since this is a kill, not a graze).
+                        if enemy.alive:
+                            enemy.alive = False
+                            score += enemy.score_value
+                            particles.spawn_explosion(enemy.x, enemy.y, color=enemy.color)
+                    elif player.invincible_timer <= 0:
+                        hit = player.take_damage(enemy.collision_damage)
+                        enemy.alive = False
+                        particles.spawn_explosion(enemy.x, enemy.y, color=enemy.color)
+                        if hit:
+                            hud.trigger_hit_flash()
             enemies = [e for e in enemies if e.alive]
 
+            particles.update(dt)
+
             if player.game_over:
+                credits_earned = score // 5
                 high_scores_data = highscore.save_high_score("PLAYER", score)
-                progress_data = progress.add_credits(progress_data, score // 5)
-                state = STATE_MENU
-                bullets = []
-                enemies = []
-                enemy_spawn_timer = ENEMY_SPAWN_INTERVAL
-                score = 0
-                level = 1
-                level_up_timer = 0.0
-                player = Player(progress_data["selected_ship"])
+                progress_data = progress.add_credits(progress_data, credits_earned)
+                game_over_stats = {"score": score, "level": level, "credits_earned": credits_earned}
+                state = STATE_GAME_OVER
 
         # =====================================================================
         # 3. DRAW
@@ -320,24 +411,25 @@ def main():
             settings_screen.draw(screen, audio_manager)
         elif state == STATE_HANGAR:
             hangar_screen.draw(screen, progress_data)
-        elif state == STATE_PLAYING:
+        elif state in (STATE_PLAYING, STATE_PAUSED):
             for enemy in enemies:
                 enemy.draw(screen)
             for bullet in bullets:
                 bullet.draw(screen)
+            particles.draw(screen)
             player.draw(screen)
             hint_surf = small_font.render(
-                "Index finger: fly  |  Pinch: shoot  |  1-6: weapon  |  ESC: Menu", True, settings.WHITE
+                "Pinch: shoot | Fist: shield | Palm: boost (ram + invincible) | Swipe: weapon | P: pause",
+                True, settings.WHITE
             )
             hint_rect = hint_surf.get_rect(midtop=(settings.SCREEN_WIDTH // 2, 12))
             screen.blit(hint_surf, hint_rect)
 
-            hud_surf = debug_font.render(
-                f"HP: {player.health}/{player.max_health}   SCORE: {score}   LEVEL: {level}   "
-                f"CR: {progress_data['credits']}   WEAPON: {weapons.get_label(player.weapon_name)}",
-                True, settings.GOLD
+            ship_label = ships.SHIP_TYPES.get(player.ship_type, {}).get("label", player.ship_type.upper())
+            hud.draw(
+                screen, player, ship_label, score, level, progress_data["credits"],
+                weapons.get_label(player.weapon_name), weapons.get_color(player.weapon_name)
             )
-            screen.blit(hud_surf, (10, 68))
 
             if level_up_timer > 0:
                 banner_font = pygame.font.SysFont("consolas", 48, bold=True)
@@ -357,6 +449,12 @@ def main():
                 )
                 debug_surf = small_font.render(target_debug, True, settings.NEON_GREEN)
                 screen.blit(debug_surf, (10, 40))
+
+            if state == STATE_PAUSED:
+                pause_screen.draw(screen)
+
+        elif state == STATE_GAME_OVER:
+            game_over_screen.draw(screen, game_over_stats)
 
         # --- Camera preview box (always visible) ---
         pygame.draw.rect(screen, (10, 10, 25), preview_rect)
@@ -412,6 +510,8 @@ def main():
 
         fps_text = debug_font.render(f"FPS: {clock.get_fps():.0f}  (F3: debug)", True, settings.NEON_GREEN)
         screen.blit(fps_text, (10, 10))
+
+        hud.draw_screen_flash(screen)
 
         pygame.display.flip()
 
