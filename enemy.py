@@ -170,8 +170,17 @@ class Enemy:
             pygame.draw.rect(surface, settings.NEON_GREEN, (bar_rect.x, bar_rect.y, fill, bar_h))
 
 
-def spawn_random_enemy(level=1):
-    enemy_type = random.choice(ENEMY_ORDER)
+def spawn_random_enemy(level=1, enemy_weights=None):
+    """enemy_weights: optional {enemy_type: weight} dict (usually a zone's
+    weighting) to bias which types show up more. Falls back to a flat
+    random choice across every type if not given."""
+    if enemy_weights:
+        population = list(enemy_weights.keys())
+        weights = list(enemy_weights.values())
+        enemy_type = random.choices(population, weights=weights, k=1)[0]
+    else:
+        enemy_type = random.choice(ENEMY_ORDER)
+
     size = ENEMY_TYPES[enemy_type]["size"]
     x = random.uniform(size, settings.SCREEN_WIDTH - size)
     y = -size
@@ -182,3 +191,21 @@ def spawn_random_enemy(level=1):
         enemy.health += bonus_health
         enemy.max_health = enemy.health
     return enemy
+
+
+def spawn_swarm(level=1, count=6, enemy_type="drone"):
+    """Spawns a tight horizontal wave of the same enemy type all at once --
+    a scripted 'event' spawn instead of the usual one-at-a-time trickle,
+    so the game occasionally throws a burst pattern at the player."""
+    cfg = ENEMY_TYPES[enemy_type]
+    size = cfg["size"]
+    margin = size * 1.5
+    usable_width = settings.SCREEN_WIDTH - margin * 2
+    swarm = []
+    for i in range(count):
+        x = margin + (usable_width * i / max(1, count - 1))
+        y = -size - (i % 2) * 50  # slight stagger so they don't perfectly overlap
+        enemy = Enemy(enemy_type, x, y)
+        enemy.speed *= 1 + 0.06 * (level - 1)
+        swarm.append(enemy)
+    return swarm

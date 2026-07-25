@@ -1,3 +1,4 @@
+import math
 import random
 
 import pygame
@@ -34,10 +35,9 @@ class ControlsScreen(BackScreenBase):
         super().__init__("CONTROLS")
         self.lines = [
             "MOVE        -  Move your index finger",
-            "SHOOT       -  Pinch (touch thumb + index tip together)",
+            "SHOOT       -  Pinch (thumb + index tip together)",
             "SHIELD      -  Closed fist",
-            "BOOST       -  Open palm: ramming speed for a few seconds",
-            "               (invincible, destroys enemies on contact)",
+            "EXTREME BOOST -  Open palm (hold)",
             "CHANGE WPN  -  Fast horizontal swipe",
             "",
             "KEYBOARD BACKUP:",
@@ -80,8 +80,30 @@ class HighScoresScreen(BackScreenBase):
 class SettingsScreen(BackScreenBase):
     def __init__(self):
         super().__init__("SETTINGS")
-        self.slider_rect = pygame.Rect(settings.SCREEN_WIDTH // 2 - 150, 260, 300, 10)
+        self.slider_rect = pygame.Rect(settings.SCREEN_WIDTH // 2 - 150, 220, 300, 10)
         self.dragging = False
+        self._pre_mute_volume = settings.DEFAULT_MUSIC_VOLUME
+
+        self.mute_button = Button("MUTE", (self.slider_rect.right + 110, self.slider_rect.centery),
+                                   "mute", width=110, height=36)
+
+        # --- Difficulty selector -- picks from settings.DIFFICULTY_LEVELS,
+        # which was already defined but never actually wired up anywhere. ---
+        self.difficulty_buttons = []
+        cx = settings.SCREEN_WIDTH // 2
+        self.diff_y = 360
+        gap = 190
+        count = len(settings.DIFFICULTY_ORDER)
+        start_x = cx - gap * (count - 1) / 2
+        for i, diff_key in enumerate(settings.DIFFICULTY_ORDER):
+            label = settings.DIFFICULTY_LEVELS[diff_key]["label"]
+            btn = Button(label, (start_x + i * gap, self.diff_y), diff_key, width=170, height=52)
+            self.difficulty_buttons.append(btn)
+
+        # --- Extra toggles ---
+        toggle_y = 480
+        self.debug_toggle_button = Button("DEBUG OVERLAY", (cx - 160, toggle_y), "toggle_debug", width=260, height=44)
+        self.camera_toggle_button = Button("CAMERA PREVIEW", (cx + 160, toggle_y), "toggle_camera", width=260, height=44)
 
     def _knob_rect(self, volume):
         x = self.slider_rect.x + int(volume * self.slider_rect.width)
@@ -92,14 +114,45 @@ class SettingsScreen(BackScreenBase):
             if (self.slider_rect.collidepoint(event.pos) or
                     self._knob_rect(audio_manager.volume).collidepoint(event.pos)):
                 self.dragging = True
+            elif self.mute_button.rect.collidepoint(event.pos):
+                if audio_manager.volume > 0:
+                    self._pre_mute_volume = audio_manager.volume
+                    audio_manager.set_volume(0.0)
+                else:
+                    audio_manager.set_volume(self._pre_mute_volume or 0.6)
         elif event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
         elif event.type == pygame.MOUSEMOTION and self.dragging:
             rel = (event.pos[0] - self.slider_rect.x) / self.slider_rect.width
             audio_manager.set_volume(rel)
 
-    def draw(self, surface, audio_manager):
+    def update(self, dt, mouse_pos):
+        super().update(dt, mouse_pos)
+        self.mute_button.update(dt, mouse_pos)
+        for btn in self.difficulty_buttons:
+            btn.update(dt, mouse_pos)
+        self.debug_toggle_button.update(dt, mouse_pos)
+        self.camera_toggle_button.update(dt, mouse_pos)
+
+    def handle_click(self, mouse_pos, progress_data, debug_mode, camera_preview_visible):
+        if self.back_button.rect.collidepoint(mouse_pos):
+            return "back", progress_data, debug_mode, camera_preview_visible
+        for btn in self.difficulty_buttons:
+            if btn.rect.collidepoint(mouse_pos):
+                progress_data["difficulty"] = btn.action
+                progress.save_progress(progress_data)
+                return None, progress_data, debug_mode, camera_preview_visible
+        if self.debug_toggle_button.rect.collidepoint(mouse_pos):
+            debug_mode = not debug_mode
+            return None, progress_data, debug_mode, camera_preview_visible
+        if self.camera_toggle_button.rect.collidepoint(mouse_pos):
+            camera_preview_visible = not camera_preview_visible
+            return None, progress_data, debug_mode, camera_preview_visible
+        return None, progress_data, debug_mode, camera_preview_visible
+
+    def draw(self, surface, audio_manager, progress_data, debug_mode, camera_preview_visible):
         self.draw_frame(surface)
+
         label = self.body_font.render("MUSIC VOLUME", True, settings.WHITE)
         surface.blit(label, (self.slider_rect.x, self.slider_rect.y - 34))
 
@@ -114,6 +167,37 @@ class SettingsScreen(BackScreenBase):
         pct = int(audio_manager.volume * 100)
         pct_s = self.body_font.render(f"{pct}%", True, settings.GOLD)
         surface.blit(pct_s, (self.slider_rect.right + 20, self.slider_rect.y - 6))
+
+        self.mute_button.label = "UNMUTE" if audio_manager.volume <= 0 else "MUTE"
+        self.mute_button.draw(surface)
+
+        diff_label = self.body_font.render("DIFFICULTY", True, settings.WHITE)
+        surface.blit(diff_label, (settings.SCREEN_WIDTH // 2 - diff_label.get_width() // 2, 300))
+
+        current_diff = progress_data.get("difficulty", "normal")
+        for btn in self.difficulty_buttons:
+            btn.draw(surface)
+            if btn.action == current_diff:
+                pygame.draw.rect(surface, settings.NEON_GREEN, btn.rect.inflate(10, 10), width=3, border_radius=14)
+
+        diff_cfg = settings.DIFFICULTY_LEVELS.get(current_diff, settings.DIFFICULTY_LEVELS["normal"])
+        hint = f"Slower enemies, gentler spawns" if diff_cfg["speed_mult"] < 1 else \
+               f"Faster enemies, denser spawns" if diff_cfg["speed_mult"] > 1 else \
+               f"The standard challenge"
+        hint_s = pygame.font.SysFont("consolas", 16).render(hint, True, (180, 200, 220))
+        hint_y = self.difficulty_buttons[0].rect.bottom + 26 if self.difficulty_buttons else self.diff_y + 60
+        surface.blit(hint_s, hint_s.get_rect(center=(settings.SCREEN_WIDTH // 2, hint_y)))
+
+        self.debug_toggle_button.label = f"DEBUG OVERLAY: {'ON' if debug_mode else 'OFF'}"
+        self.camera_toggle_button.label = f"CAMERA PREVIEW: {'ON' if camera_preview_visible else 'OFF'}"
+        self.debug_toggle_button.draw(surface)
+        self.camera_toggle_button.draw(surface)
+        for btn, on in (
+            (self.debug_toggle_button, debug_mode),
+            (self.camera_toggle_button, camera_preview_visible),
+        ):
+            border = settings.NEON_GREEN if on else (90, 90, 90)
+            pygame.draw.rect(surface, border, btn.rect, width=2, border_radius=12)
 
 
 class HangarScreen(BackScreenBase):
@@ -195,36 +279,185 @@ class HangarScreen(BackScreenBase):
 
 
 class PauseScreen:
+    """The ESC/P pause overlay. Besides the usual Resume/Restart/Settings/
+    Main Menu actions, it embeds a couple of "quick settings" (music
+    volume + difficulty) directly in the panel so players don't have to
+    leave the pause screen just to nudge those -- the full Settings
+    screen (with the extra toggles) is still one click away too."""
+
     def __init__(self):
-        self.title_font = pygame.font.SysFont("consolas", 48, bold=True)
-        cx = settings.SCREEN_WIDTH // 2
+        self.title_font = pygame.font.SysFont("consolas", 46, bold=True)
+        self.small_label_font = pygame.font.SysFont("consolas", 15, bold=True)
+        self.hint_font = pygame.font.SysFont("consolas", 15)
+
+        self.panel_rect = pygame.Rect(0, 0, 760, 540)
+        self.panel_rect.center = (settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2 + 20)
+
+        cx = self.panel_rect.centerx
+        top = self.panel_rect.y
+
         self.buttons = [
-            Button("RESUME", (cx, 300), "resume", width=240, height=54),
-            Button("RESTART", (cx, 366), "restart", width=240, height=54),
-            Button("SETTINGS", (cx, 432), "settings", width=240, height=54),
-            Button("MAIN MENU", (cx, 498), "main_menu", width=240, height=54),
+            Button("RESUME", (cx, top + 120), "resume", width=230, height=50),
+            Button("RESTART", (cx, top + 176), "restart", width=230, height=50),
+            Button("SETTINGS", (cx, top + 232), "settings", width=230, height=50),
+            Button("MAIN MENU", (cx, top + 288), "main_menu", width=230, height=50),
         ]
 
+        # --- Embedded quick settings ---
+        self.divider_y = top + 328
+        self.slider_rect = pygame.Rect(self.panel_rect.x + 70, top + 372, 260, 10)
+        self.dragging = False
+        self._pre_mute_volume = settings.DEFAULT_MUSIC_VOLUME
+        self.mute_button = Button("MUTE", (self.slider_rect.right + 100, self.slider_rect.centery),
+                                   "mute", width=100, height=32)
+
+        self.difficulty_buttons = []
+        diff_y = top + 430
+        gap = 145
+        count = len(settings.DIFFICULTY_ORDER)
+        start_x = cx - gap * (count - 1) / 2
+        for i, diff_key in enumerate(settings.DIFFICULTY_ORDER):
+            label = settings.DIFFICULTY_LEVELS[diff_key]["label"]
+            btn = Button(label, (start_x + i * gap, diff_y), diff_key, width=130, height=38)
+            self.difficulty_buttons.append(btn)
+        self.diff_y = diff_y
+
+        # --- Cool animation bits ---
+        self.time_elapsed = 0.0
+        random.seed(11)
+        self.particles = [
+            {
+                "x": random.uniform(self.panel_rect.x + 10, self.panel_rect.right - 10),
+                "y": random.uniform(self.panel_rect.y + 10, self.panel_rect.bottom - 10),
+                "vy": random.uniform(-14, -4),
+                "phase": random.uniform(0, math.tau),
+                "size": random.uniform(1.2, 2.6),
+            }
+            for _ in range(26)
+        ]
+        random.seed()
+
+    def _knob_rect(self, volume):
+        x = self.slider_rect.x + int(volume * self.slider_rect.width)
+        return pygame.Rect(x - 8, self.slider_rect.y - 6, 16, 22)
+
+    def handle_event(self, event, audio_manager):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if (self.slider_rect.collidepoint(event.pos) or
+                    self._knob_rect(audio_manager.volume).collidepoint(event.pos)):
+                self.dragging = True
+            elif self.mute_button.rect.collidepoint(event.pos):
+                if audio_manager.volume > 0:
+                    self._pre_mute_volume = audio_manager.volume
+                    audio_manager.set_volume(0.0)
+                else:
+                    audio_manager.set_volume(self._pre_mute_volume or 0.6)
+        elif event.type == pygame.MOUSEBUTTONUP:
+            self.dragging = False
+        elif event.type == pygame.MOUSEMOTION and self.dragging:
+            rel = (event.pos[0] - self.slider_rect.x) / self.slider_rect.width
+            audio_manager.set_volume(rel)
+
     def update(self, dt, mouse_pos):
+        self.time_elapsed += dt
         for b in self.buttons:
             b.update(dt, mouse_pos)
+        self.mute_button.update(dt, mouse_pos)
+        for btn in self.difficulty_buttons:
+            btn.update(dt, mouse_pos)
 
-    def handle_click(self, mouse_pos):
+        for p in self.particles:
+            p["y"] += p["vy"] * dt
+            if p["y"] < self.panel_rect.y:
+                p["y"] = self.panel_rect.bottom
+                p["x"] = random.uniform(self.panel_rect.x + 10, self.panel_rect.right - 10)
+
+    def handle_click(self, mouse_pos, progress_data):
         for b in self.buttons:
             if b.rect.collidepoint(mouse_pos):
-                return b.action
-        return None
+                return b.action, progress_data
+        for btn in self.difficulty_buttons:
+            if btn.rect.collidepoint(mouse_pos):
+                progress_data["difficulty"] = btn.action
+                progress.save_progress(progress_data)
+                return None, progress_data
+        return None, progress_data
 
-    def draw(self, surface):
+    def draw(self, surface, audio_manager, progress_data):
         overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
         overlay.fill((5, 5, 20, 190))
         surface.blit(overlay, (0, 0))
 
-        title = self.title_font.render("PAUSED", True, settings.NEON_BLUE)
-        surface.blit(title, title.get_rect(center=(settings.SCREEN_WIDTH // 2, 190)))
+        # --- Pulsing neon border color, cycling blue -> purple -> green ---
+        hue_t = self.time_elapsed * 0.6
+        c1, c2 = settings.NEON_BLUE, settings.NEON_PURPLE
+        mix = 0.5 + 0.5 * math.sin(hue_t)
+        border_color = tuple(int(c1[i] + (c2[i] - c1[i]) * mix) for i in range(3))
+
+        panel_glow = pygame.Surface((self.panel_rect.width + 50, self.panel_rect.height + 50), pygame.SRCALPHA)
+        pygame.draw.rect(panel_glow, (*border_color, 45), panel_glow.get_rect(), border_radius=28)
+        surface.blit(panel_glow, (self.panel_rect.x - 25, self.panel_rect.y - 25))
+
+        pygame.draw.rect(surface, (10, 10, 28), self.panel_rect, border_radius=22)
+        pygame.draw.rect(surface, border_color, self.panel_rect, width=3, border_radius=22)
+
+        # --- Drifting particle motes inside the panel ---
+        clip = surface.get_clip()
+        surface.set_clip(self.panel_rect)
+        for p in self.particles:
+            twinkle = 0.4 + 0.6 * abs(math.sin(self.time_elapsed * 3 + p["phase"]))
+            alpha = int(160 * twinkle)
+            pygame.draw.circle(surface, (*settings.WHITE, alpha), (int(p["x"]), int(p["y"])), p["size"])
+        surface.set_clip(clip)
+
+        # --- Bobbing, glowing title ---
+        bob = math.sin(self.time_elapsed * 1.8) * 5
+        title_pos = (self.panel_rect.centerx, self.panel_rect.y + 62 + bob)
+        glow_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        for offset in range(6, 0, -2):
+            glow_text = self.title_font.render("PAUSED", True, (*border_color, 30))
+            glow_rect = glow_text.get_rect(center=title_pos)
+            glow_surf.blit(glow_text, (glow_rect.x - offset, glow_rect.y))
+            glow_surf.blit(glow_text, (glow_rect.x + offset, glow_rect.y))
+        surface.blit(glow_surf, (0, 0))
+        title_surf = self.title_font.render("PAUSED", True, settings.WHITE)
+        surface.blit(title_surf, title_surf.get_rect(center=title_pos))
 
         for b in self.buttons:
             b.draw(surface)
+
+        # --- Divider ---
+        pygame.draw.line(
+            surface, (*border_color, 120) if False else border_color,
+            (self.panel_rect.x + 50, self.divider_y), (self.panel_rect.right - 50, self.divider_y), width=1
+        )
+        quick_label = self.small_label_font.render("QUICK SETTINGS", True, (170, 190, 230))
+        surface.blit(quick_label, quick_label.get_rect(center=(self.panel_rect.centerx, self.divider_y + 18)))
+
+        # --- Volume slider ---
+        vol_label = self.small_label_font.render("MUSIC VOLUME", True, settings.WHITE)
+        surface.blit(vol_label, (self.slider_rect.x, self.slider_rect.y - 22))
+        pygame.draw.rect(surface, (60, 60, 60), self.slider_rect, border_radius=4)
+        fill_rect = pygame.Rect(
+            self.slider_rect.x, self.slider_rect.y,
+            int(self.slider_rect.width * audio_manager.volume), self.slider_rect.height
+        )
+        pygame.draw.rect(surface, settings.NEON_GREEN, fill_rect, border_radius=4)
+        pygame.draw.rect(surface, settings.WHITE, self._knob_rect(audio_manager.volume), border_radius=4)
+        self.mute_button.label = "UNMUTE" if audio_manager.volume <= 0 else "MUTE"
+        self.mute_button.draw(surface)
+
+        # --- Difficulty pills ---
+        diff_label = self.small_label_font.render("DIFFICULTY", True, settings.WHITE)
+        surface.blit(diff_label, diff_label.get_rect(center=(self.panel_rect.centerx, self.diff_y - 32)))
+        current_diff = progress_data.get("difficulty", "normal")
+        for btn in self.difficulty_buttons:
+            btn.draw(surface)
+            if btn.action == current_diff:
+                pygame.draw.rect(surface, settings.NEON_GREEN, btn.rect.inflate(8, 8), width=2, border_radius=12)
+
+        hint_s = self.hint_font.render("Press ESC to resume", True, (150, 160, 190))
+        surface.blit(hint_s, hint_s.get_rect(center=(self.panel_rect.centerx, self.panel_rect.bottom - 22)))
 
 
 class GameOverScreen:

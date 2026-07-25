@@ -3,17 +3,11 @@ hud.py
 ------
 STEP 10: A proper heads-up display.
 
-Replaces the old single line of plain debug text with a readable panel:
-  - Ship name + an animated, color-coded HP bar with a % readout
-  - A pulsing "LOW HP!" warning once health drops below 25%
-  - Chip-style badges for SCORE / LEVEL / CREDITS
-  - A weapon badge tinted to the current weapon's bullet color
-  - Status bars for SHIELD and BOOST (active / recharging / ready)
-
-Also owns the full-screen red "you got hit" flash. main.py just calls
-hud.update(dt) once per frame, hud.trigger_hit_flash() whenever the
-player actually takes damage, and hud.draw(...) / hud.draw_screen_flash(...)
-during the draw phase.
+Replaces the old single line of plain debug text with three segmented
+"block" bars (health / shield / boost), little hand-drawn icons instead
+of emoji (emoji don't render reliably through SysFont), a glowing weapon
+name badge, and a pulsing low-HP warning. Everything here is pure
+pygame.draw shapes -- no image assets required.
 """
 
 import math
@@ -21,166 +15,207 @@ import math
 import pygame
 
 import settings
+import weapons
 
 
 PANEL_X = 16
-PANEL_Y = 60
+PANEL_Y = 16
 BAR_WIDTH = 260
-HP_BAR_HEIGHT = 22
-STATUS_BAR_HEIGHT = 12
-CHIP_ROW_HEIGHT = 52
-
-HIT_FLASH_DURATION = 0.28
-LOW_HP_RATIO = 0.25
+BAR_HEIGHT = 20
+BAR_SEGMENTS = 16
+ROW_GAP = 46
 
 
-def _lerp_color(c1, c2, t):
-    t = max(0.0, min(1.0, t))
-    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+def _segmented_bar(surface, x, y, width, height, fraction, fill_color,
+                    segments=BAR_SEGMENTS, bg_color=(25, 25, 40), border_color=None):
+    """Draws a health-bar-style row of blocks, like '########..' but as
+    real filled rectangles with a thin glowing border."""
+    border_color = border_color or fill_color
+    fraction = max(0.0, min(1.0, fraction))
+    filled_segments = round(fraction * segments)
+
+    gap = 3
+    seg_w = (width - gap * (segments - 1)) / segments
+
+    # Backing panel
+    panel_rect = pygame.Rect(x - 4, y - 4, width + 8, height + 8)
+    pygame.draw.rect(surface, (8, 8, 18), panel_rect, border_radius=6)
+    pygame.draw.rect(surface, border_color, panel_rect, width=1, border_radius=6)
+
+    for i in range(segments):
+        seg_x = x + i * (seg_w + gap)
+        seg_rect = pygame.Rect(int(seg_x), y, math.ceil(seg_w), height)
+        if i < filled_segments:
+            pygame.draw.rect(surface, fill_color, seg_rect, border_radius=2)
+        else:
+            pygame.draw.rect(surface, bg_color, seg_rect, border_radius=2)
 
 
-def draw_bar(surface, x, y, width, height, ratio, fill_color,
-             bg_color=(22, 22, 40), border_color=(255, 255, 255),
-             border_width=2, radius=6):
-    """Generic rounded progress bar -- used for HP, shield, and boost."""
-    ratio = max(0.0, min(1.0, ratio))
-    bg_rect = pygame.Rect(x, y, width, height)
-    pygame.draw.rect(surface, bg_color, bg_rect, border_radius=radius)
-    fill_w = int(width * ratio)
-    if fill_w > 0:
-        pygame.draw.rect(surface, fill_color, pygame.Rect(x, y, fill_w, height), border_radius=radius)
-    if border_color:
-        pygame.draw.rect(surface, border_color, bg_rect, width=border_width, border_radius=radius)
+def _draw_heart(surface, cx, cy, size, color):
+    r = size / 2.4
+    pygame.draw.circle(surface, color, (int(cx - r * 0.9), int(cy - r * 0.4)), int(r))
+    pygame.draw.circle(surface, color, (int(cx + r * 0.9), int(cy - r * 0.4)), int(r))
+    pygame.draw.polygon(surface, color, [
+        (cx - size * 0.95, cy - r * 0.15),
+        (cx + size * 0.95, cy - r * 0.15),
+        (cx, cy + size * 0.95),
+    ])
+
+
+def _draw_shield_icon(surface, cx, cy, size, color):
+    pts = [
+        (cx, cy - size), (cx + size * 0.85, cy - size * 0.5),
+        (cx + size * 0.85, cy + size * 0.25), (cx, cy + size),
+        (cx - size * 0.85, cy + size * 0.25), (cx - size * 0.85, cy - size * 0.5),
+    ]
+    pygame.draw.polygon(surface, color, pts)
+    pygame.draw.polygon(surface, settings.WHITE, pts, width=2)
+
+
+def _draw_bolt_icon(surface, cx, cy, size, color):
+    pts = [
+        (cx + size * 0.15, cy - size), (cx - size * 0.55, cy + size * 0.15),
+        (cx - size * 0.05, cy + size * 0.15), (cx - size * 0.15, cy + size),
+        (cx + size * 0.55, cy - size * 0.15), (cx + size * 0.05, cy - size * 0.15),
+    ]
+    pygame.draw.polygon(surface, color, pts)
+    pygame.draw.polygon(surface, settings.WHITE, pts, width=1)
 
 
 class HUD:
     def __init__(self):
-        self.label_font = pygame.font.SysFont("consolas", 14, bold=True)
-        self.value_font = pygame.font.SysFont("consolas", 18, bold=True)
-        self.ship_font = pygame.font.SysFont("consolas", 22, bold=True)
+        self.label_font = pygame.font.SysFont("consolas", 15, bold=True)
+        self.pct_font = pygame.font.SysFont("consolas", 15, bold=True)
+        self.weapon_font = pygame.font.SysFont("consolas", 20, bold=True)
+        self.stat_font = pygame.font.SysFont("consolas", 17, bold=True)
         self.warning_font = pygame.font.SysFont("consolas", 26, bold=True)
-
         self.time_elapsed = 0.0
-        self.screen_flash_timer = 0.0
-
-    def trigger_hit_flash(self):
-        self.screen_flash_timer = HIT_FLASH_DURATION
 
     def update(self, dt):
         self.time_elapsed += dt
-        self.screen_flash_timer = max(0.0, self.screen_flash_timer - dt)
 
-    def draw_screen_flash(self, surface):
-        """Call this LAST in the draw phase so the flash sits over everything."""
-        if self.screen_flash_timer <= 0:
-            return
-        alpha = int(150 * (self.screen_flash_timer / HIT_FLASH_DURATION))
-        flash_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        flash_surf.fill((255, 30, 30, alpha))
-        surface.blit(flash_surf, (0, 0))
+    def _draw_row(self, surface, y, icon_fn, icon_color, label, fraction, fill_color, extra_text=""):
+        icon_cx, icon_cy = PANEL_X + 12, y + BAR_HEIGHT // 2
+        icon_fn(surface, icon_cx, icon_cy, 11, icon_color)
 
-    def draw(self, surface, player, ship_label, score, level, credits_amount, weapon_label, weapon_color):
-        x, y = PANEL_X, PANEL_Y
+        label_surf = self.label_font.render(label, True, settings.WHITE)
+        surface.blit(label_surf, (PANEL_X + 30, y - 17))
 
-        # --- Ship name -------------------------------------------------
-        ship_surf = self.ship_font.render(ship_label.upper(), True, settings.NEON_BLUE)
-        surface.blit(ship_surf, (x, y))
-        y += ship_surf.get_height() + 4
+        bar_x = PANEL_X + 30
+        _segmented_bar(surface, bar_x, y, BAR_WIDTH, BAR_HEIGHT, fraction, fill_color)
 
-        # --- HP bar (color shifts green -> gold -> pulsing red) --------
-        hp_ratio = player.hp_display / player.max_health if player.max_health else 0
-        if hp_ratio > 0.6:
-            hp_color = settings.NEON_GREEN
-        elif hp_ratio > LOW_HP_RATIO:
+        pct_text = extra_text if extra_text else f"{int(round(fraction * 100))}%"
+        pct_surf = self.pct_font.render(pct_text, True, settings.WHITE)
+        surface.blit(pct_surf, (bar_x + BAR_WIDTH + 10, y + BAR_HEIGHT // 2 - pct_surf.get_height() // 2))
+
+    def draw(self, surface, player, score, level, credits_amount):
+        y = PANEL_Y + 20
+
+        # --- Health bar ---
+        low_hp = player.health_fraction <= 0.25
+        if low_hp:
+            pulse = 0.5 + 0.5 * abs(math.sin(self.time_elapsed * 8))
+            hp_color = tuple(int(c) for c in (
+                settings.DANGER_RED[0],
+                settings.DANGER_RED[1] * pulse * 0.5,
+                settings.DANGER_RED[2] * pulse * 0.5,
+            ))
+        elif player.health_fraction <= 0.5:
             hp_color = settings.GOLD
         else:
-            pulse = 0.5 + 0.5 * abs(math.sin(self.time_elapsed * 8))
-            hp_color = _lerp_color((150, 20, 20), settings.DANGER_RED, pulse)
+            hp_color = settings.NEON_GREEN
 
-        border_color = settings.WHITE
-        if hp_ratio <= LOW_HP_RATIO:
-            pulse = 0.5 + 0.5 * abs(math.sin(self.time_elapsed * 10))
-            border_color = _lerp_color(settings.WHITE, settings.DANGER_RED, pulse)
+        self._draw_row(
+            surface, y, _draw_heart, settings.DANGER_RED,
+            "HEALTH", player.health_fraction, hp_color
+        )
+        y += ROW_GAP
 
-        draw_bar(surface, x, y, BAR_WIDTH, HP_BAR_HEIGHT, hp_ratio, hp_color, border_color=border_color)
-        pct_surf = self.value_font.render(f"{max(0, int(round(hp_ratio * 100)))}%", True, settings.WHITE)
-        surface.blit(pct_surf, pct_surf.get_rect(center=(x + BAR_WIDTH // 2, y + HP_BAR_HEIGHT // 2)))
-        y += HP_BAR_HEIGHT + 6
-
-        # --- Low HP warning ---------------------------------------------
-        if hp_ratio <= LOW_HP_RATIO and hp_ratio > 0:
-            pulse = 0.5 + 0.5 * abs(math.sin(self.time_elapsed * 10))
-            warn_color = _lerp_color((120, 0, 0), settings.DANGER_RED, pulse)
-            warn_surf = self.warning_font.render("\u26a0 LOW HP!", True, warn_color)
-            surface.blit(warn_surf, (x, y))
-            y += warn_surf.get_height() + 6
-
-        # --- SCORE / LEVEL / CREDITS chips -------------------------------
-        chips = [
-            ("SCORE", str(score), settings.GOLD),
-            ("LEVEL", str(level), settings.NEON_PURPLE),
-            ("CREDITS", str(credits_amount), settings.NEON_GREEN),
-        ]
-        chip_x = x
-        for label, value, color in chips:
-            label_surf = self.label_font.render(label, True, (170, 170, 195))
-            value_surf = self.value_font.render(value, True, color)
-            chip_w = max(label_surf.get_width(), value_surf.get_width()) + 18
-            chip_rect = pygame.Rect(chip_x, y, chip_w, CHIP_ROW_HEIGHT)
-            pygame.draw.rect(surface, (14, 14, 30), chip_rect, border_radius=8)
-            pygame.draw.rect(surface, color, chip_rect, width=2, border_radius=8)
-            surface.blit(label_surf, (chip_rect.x + 9, chip_rect.y + 5))
-            surface.blit(value_surf, (chip_rect.x + 9, chip_rect.y + 5 + label_surf.get_height() + 2))
-            chip_x += chip_w + 10
-        y += CHIP_ROW_HEIGHT + 10
-
-        # --- Weapon badge, tinted to the weapon's bullet color -----------
-        weapon_surf = self.value_font.render(weapon_label, True, settings.WHITE)
-        weapon_rect = pygame.Rect(x, y, weapon_surf.get_width() + 36, 30)
-        pygame.draw.rect(surface, (14, 14, 30), weapon_rect, border_radius=8)
-        pygame.draw.rect(surface, weapon_color, weapon_rect, width=2, border_radius=8)
-        pygame.draw.circle(surface, weapon_color, (weapon_rect.x + 15, weapon_rect.centery), 6)
-        pygame.draw.circle(surface, settings.WHITE, (weapon_rect.x + 15, weapon_rect.centery), 6, width=1)
-        surface.blit(weapon_surf, (weapon_rect.x + 28, weapon_rect.y + 6))
-        y += weapon_rect.height + 10
-
-        # --- Shield status bar --------------------------------------------
+        # --- Shield bar ---
         if player.is_shielded:
-            shield_ratio = player.shield_timer / player.shield_duration
+            shield_frac = player.shield_timer / player.shield_duration
+            shield_text = f"ACTIVE {player.shield_timer:.1f}s"
             shield_color = settings.NEON_BLUE
-            shield_text = f"SHIELD ACTIVE  {player.shield_timer:.1f}s"
         elif player.shield_cooldown_timer > 0:
-            total = player.shield_duration + player.shield_cooldown
-            shield_ratio = 1.0 - (player.shield_cooldown_timer / total)
-            shield_color = (100, 100, 130)
-            shield_text = "SHIELD RECHARGING"
+            total_cd = player.shield_duration + player.shield_cooldown
+            shield_frac = 1.0 - (player.shield_cooldown_timer / total_cd)
+            shield_text = f"CHARGING {player.shield_cooldown_timer:.1f}s"
+            shield_color = (90, 110, 160)
         else:
-            shield_ratio = 1.0
+            shield_frac = 1.0
+            shield_text = "READY"
             shield_color = settings.NEON_BLUE
-            shield_text = "SHIELD READY"
 
-        label_surf = self.label_font.render(shield_text, True, (200, 205, 225))
-        surface.blit(label_surf, (x, y))
-        y += label_surf.get_height() + 2
-        draw_bar(surface, x, y, BAR_WIDTH, STATUS_BAR_HEIGHT, shield_ratio, shield_color)
-        y += STATUS_BAR_HEIGHT + 8
+        self._draw_row(
+            surface, y, _draw_shield_icon, settings.NEON_BLUE,
+            "SHIELD", shield_frac, shield_color, extra_text=shield_text
+        )
+        y += ROW_GAP
 
-        # --- Boost status bar ----------------------------------------------
-        if player.is_boosting:
-            boost_ratio = player.boost_timer / player.boost_duration
+        # --- Boost / extreme speed bar ---
+        if player.boost_locked_out:
+            boost_color = settings.DANGER_RED
+            boost_text = "OVERHEAT"
+        elif player.boosting:
             boost_color = settings.GOLD
-            boost_text = f"BOOST ACTIVE  {player.boost_timer:.1f}s"
-        elif player.boost_cooldown_timer > 0:
-            total = player.boost_duration + player.boost_cooldown
-            boost_ratio = 1.0 - (player.boost_cooldown_timer / total)
-            boost_color = (100, 100, 130)
-            boost_text = "BOOST RECHARGING"
+            boost_text = f"{int(player.boost_fraction * 100)}%"
         else:
-            boost_ratio = 1.0
-            boost_color = settings.GOLD
-            boost_text = "BOOST READY"
+            boost_color = settings.NEON_PURPLE
+            boost_text = f"{int(player.boost_fraction * 100)}%"
 
-        label_surf = self.label_font.render(boost_text, True, (200, 205, 225))
-        surface.blit(label_surf, (x, y))
-        y += label_surf.get_height() + 2
-        draw_bar(surface, x, y, BAR_WIDTH, STATUS_BAR_HEIGHT, boost_ratio, boost_color)
+        self._draw_row(
+            surface, y, _draw_bolt_icon, settings.GOLD,
+            "EXTREME BOOST", player.boost_fraction, boost_color, extra_text=boost_text
+        )
+        y += ROW_GAP + 4
+
+        # --- Weapon badge ---
+        weapon_color = _weapon_color(player.weapon_name)
+        weapon_label = f">> {weapons.get_label(player.weapon_name)} <<"
+        weapon_surf = self.weapon_font.render(weapon_label, True, settings.WHITE)
+        badge_rect = pygame.Rect(PANEL_X, y, weapon_surf.get_width() + 34, 34)
+        glow_surf = pygame.Surface((badge_rect.width + 16, badge_rect.height + 16), pygame.SRCALPHA)
+        pygame.draw.rect(glow_surf, (*weapon_color, 70), glow_surf.get_rect(), border_radius=12)
+        surface.blit(glow_surf, (badge_rect.x - 8, badge_rect.y - 8))
+        pygame.draw.rect(surface, (12, 12, 26), badge_rect, border_radius=8)
+        pygame.draw.rect(surface, weapon_color, badge_rect, width=2, border_radius=8)
+        pygame.draw.circle(surface, weapon_color, (badge_rect.x + 16, badge_rect.centery), 6)
+        surface.blit(weapon_surf, (badge_rect.x + 26, badge_rect.centery - weapon_surf.get_height() // 2))
+        y += 46
+
+        # --- Score / Level / Credits strip ---
+        stat_text = f"SCORE {score:,}   *   LV.{level}   *   {credits_amount:,} CR"
+        stat_surf = self.stat_font.render(stat_text, True, settings.GOLD)
+        surface.blit(stat_surf, (PANEL_X, y))
+
+        # --- Low HP warning banner ---
+        if low_hp:
+            blink_on = int(self.time_elapsed * 6) % 2 == 0
+            if blink_on:
+                warn_surf = self.warning_font.render("!! HULL CRITICAL !!", True, settings.DANGER_RED)
+                warn_rect = warn_surf.get_rect(midtop=(settings.SCREEN_WIDTH // 2, 60))
+                glow = pygame.Surface((warn_rect.width + 30, warn_rect.height + 16), pygame.SRCALPHA)
+                pygame.draw.rect(glow, (*settings.DANGER_RED, 60), glow.get_rect(), border_radius=10)
+                surface.blit(glow, (warn_rect.x - 15, warn_rect.y - 8))
+                surface.blit(warn_surf, warn_rect)
+
+
+def _weapon_color(weapon_name):
+    colors = {
+        "normal": settings.NEON_GREEN,
+        "double": settings.NEON_BLUE,
+        "triple": settings.NEON_PURPLE,
+        "spread": settings.GOLD,
+        "rapid": (255, 240, 120),
+        "plasma": (255, 60, 200),
+    }
+    return colors.get(weapon_name, settings.NEON_GREEN)
+
+
+def draw_screen_flash(surface, alpha, color):
+    """Full-screen tinted overlay -- brief flash when the player is hit."""
+    if alpha <= 0:
+        return
+    flash_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+    flash_surf.fill((*color, int(alpha)))
+    surface.blit(flash_surf, (0, 0))

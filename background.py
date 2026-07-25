@@ -64,8 +64,8 @@ class Planet:
         )
         self.has_ring = random.random() < 0.5
 
-    def update(self, dt, speed_mult=1.0):
-        self.y += self.speed * speed_mult * dt
+    def update(self, dt):
+        self.y += self.speed * dt
         if self.y - self.radius > settings.SCREEN_HEIGHT:
             self.__init__()  # respawn as a "new" planet above the screen
             self.y = -self.radius
@@ -116,9 +116,9 @@ class Asteroid:
             pts.append((math.cos(angle) * r, math.sin(angle) * r))
         return pts
 
-    def update(self, dt, speed_mult=1.0):
-        self.y += self.speed_y * speed_mult * dt
-        self.x += self.speed_x * speed_mult * dt
+    def update(self, dt):
+        self.y += self.speed_y * dt
+        self.x += self.speed_x * dt
         self.rotation += self.rotation_speed * dt
         if self.y - self.size > settings.SCREEN_HEIGHT:
             self.__init__()
@@ -156,9 +156,9 @@ class Starfield:
         for star in self.stars:
             star.update(dt, speed_mult)
         for planet in self.planets:
-            planet.update(dt, speed_mult)
+            planet.update(dt)
         for asteroid in self.asteroids:
-            asteroid.update(dt, speed_mult)
+            asteroid.update(dt)
 
     def draw(self, surface):
         surface.fill(settings.DARK_SPACE)

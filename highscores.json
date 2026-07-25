@@ -1,9 +1,21 @@
 [
   {
     "name": "PLAYER",
+    "score": 4730,
+    "difficulty": "Normal",
+    "date": "2026-07-24"
+  },
+  {
+    "name": "PLAYER",
     "score": 2580,
     "difficulty": "Normal",
     "date": "2026-07-22"
+  },
+  {
+    "name": "PLAYER",
+    "score": 1880,
+    "difficulty": "Normal",
+    "date": "2026-07-25"
   },
   {
     "name": "PLAYER",

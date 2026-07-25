@@ -31,6 +31,7 @@ class Player:
     def __init__(self, ship_type="guardian"):
         ship_cfg = ships.SHIP_TYPES.get(ship_type, ships.SHIP_TYPES["guardian"])
         self.ship_type = ship_type
+        self.ship_label = ship_cfg["label"]
         self.ship_color = ship_cfg["color"]
         self.wing_color = ship_cfg["wing_color"]
         self.fire_rate_mult = ship_cfg["fire_rate_mult"]
@@ -48,9 +49,7 @@ class Player:
 
         self.max_health = int(settings.PLAYER_START_HEALTH * ship_cfg["health_mult"])
         self.health = self.max_health
-        self.hp_display = float(self.health)  # eases toward `health` -- makes the HUD bar drain smoothly instead of jumping
         self.invincible_timer = 0.0
-        self.damage_flash_timer = 0.0  # > 0 briefly right after taking a hit -- drives ship flash/blink + impact ring
         self.game_over = False
 
         # --- Shooting (Step 7-8) ---
@@ -64,28 +63,53 @@ class Player:
         self.shield_cooldown = settings.SHIELD_COOLDOWN_SECONDS
         self.shield_timer = 0.0            # > 0 while shield is actively up
         self.shield_cooldown_timer = 0.0   # > 0 while shield is unavailable
-        self.shield_activate_flash = 0.0   # > 0 briefly right when shield goes up -- drives an expanding "pop" ring
 
-        # --- Boost (open palm gesture triggers it, then it runs on its own
-        # timer -- like the shield, not a "hold to go fast" control) ---
+        # --- Boost (open palm gesture, held) ---
+        # STEP 10: Extreme speed now runs off a real energy meter instead of
+        # being free forever -- hold the boost, it drains; let go, it
+        # slowly recharges. Drain it all the way and it "overheats" and
+        # locks out until it recovers a bit, like a stamina bar.
         self.boosting = False
-        self.boost_multiplier = settings.BOOST_SPEED_MULTIPLIER
-        self.boost_duration = settings.BOOST_DURATION_SECONDS
-        self.boost_cooldown = settings.BOOST_COOLDOWN_SECONDS
-        self.boost_timer = 0.0            # > 0 while boost is actively running
-        self.boost_cooldown_timer = 0.0   # > 0 while boost is unavailable
+        self.boost_multiplier = 3.6
+        self.boost_energy_max = 100.0
+        self.boost_energy = self.boost_energy_max
+        self.boost_drain_per_sec = 48.0
+        self.boost_regen_per_sec = 20.0
+        self.boost_lockout_recovery_frac = 0.3  # must refill to 30% to boost again
+        self.boost_locked_out = False
 
-    def update(self, dt, target_x, target_y, keyboard_dx=0.0, keyboard_dy=0.0):
+        # --- Damage feedback (Step 10) ---
+        self.damage_flash_timer = 0.0
+        self.damage_flash_duration = 0.4
+        self.hit_shake_timer = 0.0
+        self.hit_shake_duration = 0.25
+
+    def update(self, dt, target_x, target_y, keyboard_dx=0.0, keyboard_dy=0.0, boost_requested=False):
         """target_x/target_y: where the player's index fingertip currently
         maps to on screen, or None if no hand is currently detected.
         keyboard_dx/keyboard_dy: direct movement speed from arrow-key/WASD
         backup controls -- when either is non-zero, keyboard takes priority
         over finger tracking for this frame.
-        Boost is no longer a "hold to activate" flag passed in here -- call
-        activate_boost() once (e.g. on the open_palm gesture) and it runs
-        for boost_duration seconds on its own, same pattern as the shield."""
-        self.boosting = self.boost_timer > 0.0
+        boost_requested: True while the boost gesture/key is being held --
+        actual boosting only happens if the energy meter allows it (see
+        below), so this is a request, not a guarantee."""
+
+        # A fully-drained meter "overheats" and locks out until it climbs
+        # back up past the recovery threshold -- prevents holding boost
+        # permanently and forces a real cooldown, like Temple Run's meter.
+        if self.boost_locked_out and self.boost_energy >= self.boost_energy_max * self.boost_lockout_recovery_frac:
+            self.boost_locked_out = False
+
+        self.boosting = bool(boost_requested) and not self.boost_locked_out and self.boost_energy > 0.0
         speed_mult = self.boost_multiplier if self.boosting else 1.0
+
+        if self.boosting:
+            self.boost_energy = max(0.0, self.boost_energy - self.boost_drain_per_sec * dt)
+            if self.boost_energy <= 0.0:
+                self.boosting = False
+                self.boost_locked_out = True
+        else:
+            self.boost_energy = min(self.boost_energy_max, self.boost_energy + self.boost_regen_per_sec * dt)
 
         if keyboard_dx != 0.0 or keyboard_dy != 0.0:
             self.x += keyboard_dx * speed_mult * dt
@@ -111,11 +135,8 @@ class Player:
         self.invincible_timer = max(0.0, self.invincible_timer - dt)
         self.shield_timer = max(0.0, self.shield_timer - dt)
         self.shield_cooldown_timer = max(0.0, self.shield_cooldown_timer - dt)
-        self.shield_activate_flash = max(0.0, self.shield_activate_flash - dt)
-        self.boost_timer = max(0.0, self.boost_timer - dt)
-        self.boost_cooldown_timer = max(0.0, self.boost_cooldown_timer - dt)
         self.damage_flash_timer = max(0.0, self.damage_flash_timer - dt)
-        self.hp_display += (self.health - self.hp_display) * min(1.0, 6.0 * dt)
+        self.hit_shake_timer = max(0.0, self.hit_shake_timer - dt)
 
     def can_shoot(self):
         return self.shot_timer <= 0.0
@@ -126,22 +147,18 @@ class Player:
     def activate_shield(self):
         self.shield_timer = self.shield_duration
         self.shield_cooldown_timer = self.shield_duration + self.shield_cooldown
-        self.shield_activate_flash = 0.4
 
     @property
     def is_shielded(self):
         return self.shield_timer > 0.0
 
-    def can_activate_boost(self):
-        return self.boost_timer <= 0.0 and self.boost_cooldown_timer <= 0.0
-
-    def activate_boost(self):
-        self.boost_timer = self.boost_duration
-        self.boost_cooldown_timer = self.boost_duration + self.boost_cooldown
+    @property
+    def health_fraction(self):
+        return self.health / self.max_health if self.max_health else 0.0
 
     @property
-    def is_boosting(self):
-        return self.boost_timer > 0.0
+    def boost_fraction(self):
+        return self.boost_energy / self.boost_energy_max if self.boost_energy_max else 0.0
 
     def get_rect(self):
         return pygame.Rect(
@@ -150,20 +167,16 @@ class Player:
         )
 
     def take_damage(self, amount):
-        # Boosting acts like a temporary shield too -- ramming through
-        # enemies at that speed shouldn't hurt the ship. main.py is the
-        # one that actually destroys the rammed enemy; this just makes
-        # sure the player doesn't also take damage from the same hit.
-        if self.invincible_timer > 0 or self.is_shielded or self.is_boosting:
-            return False
+        if self.invincible_timer > 0 or self.is_shielded:
+            return
         self.health -= amount
-        self.damage_flash_timer = 0.3
+        self.damage_flash_timer = self.damage_flash_duration
+        self.hit_shake_timer = self.hit_shake_duration
         if self.health <= 0:
             self.health = 0
             self.game_over = True
         else:
             self.invincible_timer = 1.0
-        return True
 
     def set_weapon(self, weapon_name):
         if weapon_name in weapons.WEAPON_TYPES:
@@ -187,12 +200,21 @@ class Player:
         self.muzzle_flash_timer = 0.08  # seconds the flash stays visible
 
     def draw(self, surface):
-        cx, cy = int(self.x), int(self.y)
+        # --- Hit shake (Step 10) ---
+        # A brief, decaying random jitter so getting hit has real physical
+        # weight instead of just a number ticking down.
+        shake_x = shake_y = 0.0
+        if self.hit_shake_timer > 0:
+            shake_mag = 7 * (self.hit_shake_timer / self.hit_shake_duration)
+            shake_x = random.uniform(-shake_mag, shake_mag)
+            shake_y = random.uniform(-shake_mag, shake_mag)
+
+        cx, cy = int(self.x + shake_x), int(self.y + shake_y)
         hw, hh = self.width / 2, self.height / 2
 
         # --- Engine flame (drawn first, so the ship body covers its top) ---
         flicker = 0.6 + 0.4 * abs(math.sin(self.engine_phase)) + random.uniform(-0.05, 0.05)
-        boost_factor = 1.7 if self.boosting else 1.0
+        boost_factor = 2.4 if self.boosting else 1.0
         flame_length = 22 * flicker * boost_factor
         flame_points = [
             (cx - 8, cy + hh - 4),
@@ -207,69 +229,66 @@ class Player:
         ]
         pygame.draw.polygon(surface, settings.WHITE, inner_flame_points)
 
-        # --- Ship body: a simple triangular fuselage with two wings.
-        # While the post-hit invincibility window is running, blink the
-        # body on/off and tint it red -- the classic "you just got hit"
-        # arcade shooter cue. ---
-        blink_visible = True
-        body_color = self.ship_color
-        wing_color = self.wing_color
-        if self.invincible_timer > 0:
-            blink_visible = (int(self.invincible_timer * 14) % 2 == 0)
-            body_color = settings.DANGER_RED
-            wing_color = (140, 30, 30)
+        # --- Ship body: a simple triangular fuselage with two wings ---
+        body_points = [
+            (cx, cy - hh),          # nose
+            (cx - hw * 0.35, cy + hh * 0.6),
+            (cx + hw * 0.35, cy + hh * 0.6),
+        ]
+        wing_left = [
+            (cx - hw * 0.3, cy),
+            (cx - hw, cy + hh * 0.7),
+            (cx - hw * 0.25, cy + hh * 0.75),
+        ]
+        wing_right = [
+            (cx + hw * 0.3, cy),
+            (cx + hw, cy + hh * 0.7),
+            (cx + hw * 0.25, cy + hh * 0.75),
+        ]
 
-        if blink_visible:
-            body_points = [
-                (cx, cy - hh),          # nose
-                (cx - hw * 0.35, cy + hh * 0.6),
-                (cx + hw * 0.35, cy + hh * 0.6),
-            ]
-            wing_left = [
-                (cx - hw * 0.3, cy),
-                (cx - hw, cy + hh * 0.7),
-                (cx - hw * 0.25, cy + hh * 0.75),
-            ]
-            wing_right = [
-                (cx + hw * 0.3, cy),
-                (cx + hw, cy + hh * 0.7),
-                (cx + hw * 0.25, cy + hh * 0.75),
-            ]
+        # --- Boost afterimage trail (Step 9) ---
+        # A few fading, offset copies of the hull stretched out behind the
+        # ship so an "extreme speed" boost actually reads as extreme speed,
+        # not just a slightly-faster glide.
+        if self.boosting:
+            trail_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            for i in range(1, 5):
+                offset_y = i * 16
+                alpha = max(0, 100 - i * 22)
+                ghost_points = [(px, py + offset_y) for px, py in body_points]
+                pygame.draw.polygon(trail_surf, (*self.ship_color, alpha), ghost_points)
+            surface.blit(trail_surf, (0, 0))
 
-            pygame.draw.polygon(surface, wing_color, wing_left)
-            pygame.draw.polygon(surface, wing_color, wing_right)
-            pygame.draw.polygon(surface, body_color, body_points)
-            pygame.draw.polygon(surface, settings.WHITE, body_points, width=2)
+            # Streak lines shooting past the wingtips -- classic "warp speed" cue
+            streak_color = (*settings.WHITE, 120)
+            streak_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            for sx in (cx - hw * 0.6, cx, cx + hw * 0.6):
+                pygame.draw.line(
+                    streak_surf, streak_color,
+                    (sx, cy + hh), (sx, cy + hh + 46 * flicker), width=2
+                )
+            surface.blit(streak_surf, (0, 0))
 
-            # Cockpit glow
-            pygame.draw.circle(surface, settings.NEON_GREEN, (cx, cy - hh * 0.15), 5)
+        pygame.draw.polygon(surface, self.wing_color, wing_left)
+        pygame.draw.polygon(surface, self.wing_color, wing_right)
+        pygame.draw.polygon(surface, self.ship_color, body_points)
+        pygame.draw.polygon(surface, settings.WHITE, body_points, width=2)
 
-        # --- Hit impact ring: a quick red shockwave the instant damage
-        # actually lands, independent of the blink above so it still
-        # reads even in the same frame the ship starts flickering. ---
+        # --- Damage flicker (Step 10) ---
+        # Hard red strobe over the hull right after taking a hit -- blinks
+        # a few times over damage_flash_duration rather than a flat tint,
+        # which reads much more like "just got hit" than a static overlay.
         if self.damage_flash_timer > 0:
-            progress = 1.0 - (self.damage_flash_timer / 0.3)  # 0.0 -> 1.0
-            ring_radius = int(max(hw, hh) * (1.0 + progress * 2.0))
-            ring_alpha = int(230 * (1.0 - progress))
-            if ring_alpha > 0 and ring_radius > 0:
-                ring_surf = pygame.Surface((ring_radius * 2 + 8, ring_radius * 2 + 8), pygame.SRCALPHA)
-                pygame.draw.circle(ring_surf, (*settings.DANGER_RED, ring_alpha),
-                                    (ring_radius + 4, ring_radius + 4), ring_radius, width=3)
-                surface.blit(ring_surf, (cx - ring_radius - 4, cy - ring_radius - 4))
+            blink_on = int(self.damage_flash_timer * 18) % 2 == 0
+            if blink_on:
+                flash_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                pygame.draw.polygon(flash_surf, (255, 40, 40, 165), body_points)
+                pygame.draw.polygon(flash_surf, (255, 40, 40, 165), wing_left)
+                pygame.draw.polygon(flash_surf, (255, 40, 40, 165), wing_right)
+                surface.blit(flash_surf, (0, 0))
 
-        # --- Boost speed-aura: a stretched, streaking glow while the timed
-        # boost power-up is active. Visually distinct from the round fist
-        # shield bubble so the player can tell the two apart at a glance. ---
-        if self.is_boosting:
-            pulse = 0.75 + 0.25 * abs(math.sin(self.engine_phase * 1.4))
-            aura_w = int(self.width * 1.6)
-            aura_h = int(self.height * 2.2)
-            aura_surf = pygame.Surface((aura_w + 12, aura_h + 12), pygame.SRCALPHA)
-            aura_alpha = int(70 * pulse)
-            aura_rect = pygame.Rect(6, 6, aura_w, aura_h)
-            pygame.draw.ellipse(aura_surf, (*settings.GOLD, aura_alpha), aura_rect)
-            pygame.draw.ellipse(aura_surf, (*settings.WHITE, min(255, aura_alpha + 50)), aura_rect, width=2)
-            surface.blit(aura_surf, (cx - aura_w // 2 - 6, cy - aura_h // 2 - 6))
+        # Cockpit glow
+        pygame.draw.circle(surface, settings.NEON_GREEN, (cx, cy - hh * 0.15), 5)
 
         # --- Shield bubble (Step: fist gesture) ---
         if self.is_shielded:
@@ -282,21 +301,6 @@ class Player:
             pygame.draw.circle(shield_surf, (*settings.WHITE, min(255, alpha + 60)),
                                 (shield_radius + 4, shield_radius + 4), shield_radius, width=2)
             surface.blit(shield_surf, (cx - shield_radius - 4, cy - shield_radius - 4))
-
-        # --- Shield activation "pop" ring: expands outward and fades
-        # right at the moment the fist gesture triggers the shield, so
-        # activation reads as an event instead of the bubble just
-        # appearing. Purely cosmetic, runs independently of shield_timer
-        # so it still plays even in the same frame the shield goes up. ---
-        if self.shield_activate_flash > 0:
-            progress = 1.0 - (self.shield_activate_flash / 0.4)  # 0.0 -> 1.0
-            ring_radius = int(max(hw, hh) * (1.0 + progress * 2.2))
-            ring_alpha = int(220 * (1.0 - progress))
-            if ring_alpha > 0 and ring_radius > 0:
-                ring_surf = pygame.Surface((ring_radius * 2 + 8, ring_radius * 2 + 8), pygame.SRCALPHA)
-                pygame.draw.circle(ring_surf, (*settings.NEON_BLUE, ring_alpha),
-                                    (ring_radius + 4, ring_radius + 4), ring_radius, width=3)
-                surface.blit(ring_surf, (cx - ring_radius - 4, cy - ring_radius - 4))
 
         # --- Muzzle flash (Step 7) ---
         if self.muzzle_flash_timer > 0:
