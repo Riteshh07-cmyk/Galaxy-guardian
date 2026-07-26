@@ -482,6 +482,7 @@ def main():
                     explosions.append(Explosion(boss.x, boss.y, color=boss.core_color, big=True))
                     boss_bullets.clear()
                     boss = None
+                    player.trigger_victory_effect()
 
             for enemy in enemies:
                 if enemy.get_rect().colliderect(player.get_rect()) and player.invincible_timer <= 0:

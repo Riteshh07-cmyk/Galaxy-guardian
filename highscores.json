@@ -7,6 +7,12 @@
   },
   {
     "name": "PLAYER",
+    "score": 4120,
+    "difficulty": "Normal",
+    "date": "2026-07-25"
+  },
+  {
+    "name": "PLAYER",
     "score": 2580,
     "difficulty": "Normal",
     "date": "2026-07-22"

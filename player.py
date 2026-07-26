@@ -19,12 +19,20 @@ jitter.
 
 import math
 import random
+import colorsys
+from collections import deque
 
 import pygame
 
 import settings
 import weapons
 import ships
+
+
+VICTORY_EFFECT_TYPES = [
+    "golden_aura", "lightning_arcs", "rainbow_trail",
+    "shockwave_pulse", "star_rays", "phoenix_flames", "orbiting_rings",
+]
 
 
 class Player:
@@ -84,6 +92,50 @@ class Player:
         self.hit_shake_timer = 0.0
         self.hit_shake_duration = 0.25
 
+        # --- Post-boss victory effect ---
+        # A different celebratory effect gets picked at random each time a
+        # boss goes down (see trigger_victory_effect()) so it doesn't feel
+        # like the same fireworks every single fight.
+        self.victory_effect = None
+        self.position_history = deque(maxlen=30)  # used by the rainbow trail effect
+
+    def trigger_victory_effect(self, duration=2.6):
+        """Call this once, right when a boss is defeated. Picks a random
+        celebratory effect and starts it running around the ship."""
+        effect_type = random.choice(VICTORY_EFFECT_TYPES)
+        data = {}
+
+        if effect_type == "lightning_arcs":
+            data["bolts"] = [
+                {
+                    "angle": random.uniform(0, math.tau),
+                    "length": random.uniform(46, 86),
+                    "flicker_seed": random.uniform(0, 10),
+                    "jitter": [random.uniform(-1, 1) for _ in range(4)],
+                }
+                for _ in range(6)
+            ]
+        elif effect_type == "star_rays":
+            data["ray_count"] = random.choice([8, 10, 12])
+            data["spin_dir"] = random.choice([-1, 1])
+        elif effect_type == "orbiting_rings":
+            palette = [settings.NEON_BLUE, settings.NEON_PURPLE, settings.GOLD]
+            data["rings"] = [
+                {
+                    "radius": 36 + i * 18,
+                    "speed": random.uniform(1.6, 3.2) * random.choice([-1, 1]),
+                    "color": palette[i % len(palette)],
+                    "tilt": 0.4 + i * 0.12,
+                }
+                for i in range(3)
+            ]
+        elif effect_type == "phoenix_flames":
+            data["particles"] = []
+        elif effect_type == "rainbow_trail":
+            self.position_history.clear()
+
+        self.victory_effect = {"type": effect_type, "timer": 0.0, "duration": duration, "data": data}
+
     def update(self, dt, target_x, target_y, keyboard_dx=0.0, keyboard_dy=0.0, boost_requested=False):
         """target_x/target_y: where the player's index fingertip currently
         maps to on screen, or None if no hand is currently detected.
@@ -137,6 +189,40 @@ class Player:
         self.shield_cooldown_timer = max(0.0, self.shield_cooldown_timer - dt)
         self.damage_flash_timer = max(0.0, self.damage_flash_timer - dt)
         self.hit_shake_timer = max(0.0, self.hit_shake_timer - dt)
+
+        self._update_victory_effect(dt)
+
+    def _update_victory_effect(self, dt):
+        if self.victory_effect is None:
+            return
+
+        self.victory_effect["timer"] += dt
+        kind = self.victory_effect["type"]
+        data = self.victory_effect["data"]
+
+        if kind == "rainbow_trail":
+            self.position_history.append((self.x, self.y))
+        elif kind == "phoenix_flames":
+            for _ in range(3):
+                angle = random.uniform(0, math.tau)
+                speed = random.uniform(20, 70)
+                data["particles"].append({
+                    "x": self.x + random.uniform(-6, 6),
+                    "y": self.y + random.uniform(-4, 4),
+                    "vx": math.cos(angle) * speed * 0.4,
+                    "vy": math.sin(angle) * speed - 40,
+                    "life": random.uniform(0.35, 0.7),
+                    "age": 0.0,
+                    "size": random.uniform(3, 7),
+                })
+            for p in data["particles"]:
+                p["age"] += dt
+                p["x"] += p["vx"] * dt
+                p["y"] += p["vy"] * dt
+            data["particles"] = [p for p in data["particles"] if p["age"] < p["life"]]
+
+        if self.victory_effect["timer"] >= self.victory_effect["duration"]:
+            self.victory_effect = None
 
     def can_shoot(self):
         return self.shot_timer <= 0.0
@@ -211,6 +297,11 @@ class Player:
 
         cx, cy = int(self.x + shake_x), int(self.y + shake_y)
         hw, hh = self.width / 2, self.height / 2
+
+        # Rainbow trail (if active) renders behind everything else, like an
+        # afterimage the ship is leaving in its wake.
+        if self.victory_effect and self.victory_effect["type"] == "rainbow_trail":
+            self._draw_rainbow_trail(surface)
 
         # --- Engine flame (drawn first, so the ship body covers its top) ---
         flicker = 0.6 + 0.4 * abs(math.sin(self.engine_phase)) + random.uniform(-0.05, 0.05)
@@ -321,3 +412,132 @@ class Player:
                 flash_surf,
                 (int(nose_x) - flash_radius * 2, int(nose_y) - flash_radius * 2)
             )
+
+        if self.victory_effect and self.victory_effect["type"] != "rainbow_trail":
+            self._draw_victory_effect(surface, cx, cy)
+
+    # ------------------------------------------------------------------
+    # Post-boss victory effects -- a different one each time, purely
+    # cosmetic, doesn't touch gameplay stats at all.
+    # ------------------------------------------------------------------
+
+    def _draw_rainbow_trail(self, surface):
+        pts = list(self.position_history)
+        n = len(pts)
+        for i, (px, py) in enumerate(pts):
+            hue = (self.victory_effect["timer"] * 0.5 + i * 0.04) % 1.0
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 1.0)
+            fade = i / max(1, n - 1)  # older points fade out
+            alpha = int(160 * fade)
+            size = 3 + int(6 * fade)
+            pad = size + 2
+            ghost_surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+            pygame.draw.circle(ghost_surf, (int(r * 255), int(g * 255), int(b * 255), alpha), (pad, pad), size)
+            surface.blit(ghost_surf, (px - pad, py - pad))
+
+    def _draw_victory_effect(self, surface, cx, cy):
+        effect = self.victory_effect
+        kind = effect["type"]
+        data = effect["data"]
+        t = effect["timer"]
+        duration = effect["duration"]
+        fade = 1.0 - min(1.0, t / duration)  # overall fade-out across the whole effect
+
+        if kind == "golden_aura":
+            for i in range(3):
+                ring_t = (t * 1.2 + i * 0.33) % 1.0
+                r = int(28 + ring_t * 66)
+                alpha = int(200 * (1 - ring_t) * fade)
+                if alpha > 1:
+                    pad = r + 4
+                    ring_surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(ring_surf, (*settings.GOLD, alpha), (pad, pad), r, width=3)
+                    surface.blit(ring_surf, (cx - pad, cy - pad))
+            for i in range(8):
+                a = t * 2.4 + i * (math.tau / 8)
+                r = 42
+                sx, sy = cx + math.cos(a) * r, cy + math.sin(a) * r
+                spark_r = int(3 * fade) + 1
+                spark_surf = pygame.Surface((spark_r * 4, spark_r * 4), pygame.SRCALPHA)
+                pygame.draw.circle(spark_surf, (*settings.GOLD, int(255 * fade)), (spark_r * 2, spark_r * 2), spark_r)
+                surface.blit(spark_surf, (sx - spark_r * 2, sy - spark_r * 2))
+
+        elif kind == "lightning_arcs":
+            for bolt in data["bolts"]:
+                flicker = 0.5 + 0.5 * abs(math.sin(t * 22 + bolt["flicker_seed"]))
+                if flicker < 0.55:
+                    continue
+                angle = bolt["angle"] + math.sin(t * 3 + bolt["flicker_seed"]) * 0.15
+                length = bolt["length"]
+                segments = 4
+                points = [(cx, cy)]
+                for s in range(1, segments + 1):
+                    frac = s / segments
+                    base_x = cx + math.cos(angle) * length * frac
+                    base_y = cy + math.sin(angle) * length * frac
+                    jitter = bolt["jitter"][(s - 1) % len(bolt["jitter"])] * 10 * (1 - frac * 0.5)
+                    perp = angle + math.pi / 2
+                    base_x += math.cos(perp) * jitter
+                    base_y += math.sin(perp) * jitter
+                    points.append((base_x, base_y))
+                alpha = int(255 * fade * flicker)
+                bolt_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                pygame.draw.lines(bolt_surf, (*settings.NEON_BLUE, alpha), False, points, width=2)
+                pygame.draw.lines(bolt_surf, (*settings.WHITE, min(255, alpha + 40)), False, points, width=1)
+                surface.blit(bolt_surf, (0, 0))
+
+        elif kind == "shockwave_pulse":
+            pulse_period = 0.5
+            phase = (t % pulse_period) / pulse_period
+            r = int(20 + phase * 90)
+            alpha = int(220 * (1 - phase) * fade)
+            if alpha > 1:
+                pad = r + 4
+                ring_surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+                pygame.draw.circle(ring_surf, (*settings.NEON_BLUE, alpha), (pad, pad), r, width=4)
+                pygame.draw.circle(ring_surf, (*settings.WHITE, min(255, alpha + 30)), (pad, pad), r, width=1)
+                surface.blit(ring_surf, (cx - pad, cy - pad))
+
+        elif kind == "star_rays":
+            ray_count = data["ray_count"]
+            spin = t * data["spin_dir"] * 1.6
+            ray_len = 50 + 10 * abs(math.sin(t * 5))
+            ray_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            for i in range(ray_count):
+                angle = spin + (math.tau / ray_count) * i
+                tip = (cx + math.cos(angle) * ray_len, cy + math.sin(angle) * ray_len)
+                perp = angle + math.pi / 2
+                base_w = 4
+                p1 = (cx + math.cos(perp) * base_w, cy + math.sin(perp) * base_w)
+                p2 = (cx - math.cos(perp) * base_w, cy - math.sin(perp) * base_w)
+                alpha = int(180 * fade)
+                pygame.draw.polygon(ray_surf, (*settings.GOLD, alpha), [p1, p2, tip])
+            surface.blit(ray_surf, (0, 0))
+            core_r = int(6 + 3 * abs(math.sin(t * 6)))
+            pygame.draw.circle(surface, settings.WHITE, (cx, cy), core_r)
+
+        elif kind == "phoenix_flames":
+            flame_colors = [(255, 210, 60), (255, 140, 40), (255, 70, 40)]
+            for p in data["particles"]:
+                age_frac = p["age"] / p["life"]
+                color = flame_colors[min(len(flame_colors) - 1, int(age_frac * len(flame_colors)))]
+                alpha = int(220 * (1 - age_frac) * fade)
+                size = max(1, p["size"] * (1 - age_frac * 0.5))
+                pad = int(size) + 2
+                flame_surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+                pygame.draw.circle(flame_surf, (*color, alpha), (pad, pad), size)
+                surface.blit(flame_surf, (p["x"] - pad, p["y"] - pad))
+
+        elif kind == "orbiting_rings":
+            for ring in data["rings"]:
+                angle_off = t * ring["speed"]
+                rect = pygame.Rect(0, 0, ring["radius"] * 2, ring["radius"] * ring["tilt"] * 2)
+                rect.center = (cx, cy)
+                alpha = int(200 * fade)
+                ring_surf = pygame.Surface((rect.width + 8, rect.height + 8), pygame.SRCALPHA)
+                sub_rect = pygame.Rect(4, 4, rect.width, rect.height)
+                pygame.draw.ellipse(ring_surf, (*ring["color"], int(alpha * 0.35)), sub_rect, width=2)
+                # Bright moving arc riding the ellipse for a sense of rotation
+                start_a = angle_off
+                pygame.draw.arc(ring_surf, (*ring["color"], alpha), sub_rect, start_a, start_a + 1.4, width=3)
+                surface.blit(ring_surf, (rect.x - 4, rect.y - 4))
