@@ -31,6 +31,18 @@
   },
   {
     "name": "PLAYER",
+    "score": 1670,
+    "difficulty": "Normal",
+    "date": "2026-07-26"
+  },
+  {
+    "name": "PLAYER",
+    "score": 930,
+    "difficulty": "Normal",
+    "date": "2026-07-26"
+  },
+  {
+    "name": "PLAYER",
     "score": 310,
     "difficulty": "Normal",
     "date": "2026-07-22"
@@ -46,17 +58,5 @@
     "score": 70,
     "difficulty": "Normal",
     "date": "2026-07-21"
-  },
-  {
-    "name": "PLAYER",
-    "score": 0,
-    "difficulty": "Normal",
-    "date": "2026-07-22"
-  },
-  {
-    "name": "PLAYER",
-    "score": 0,
-    "difficulty": "Normal",
-    "date": "2026-07-22"
   }
 ]

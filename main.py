@@ -17,9 +17,11 @@ like Step 7 -- just now it fires whatever weapon is currently selected.
 """
 
 import sys
+import random
 import pygame
 
 import settings
+import particles
 from background import Starfield
 from menu import MainMenu
 from camera import CameraManager
@@ -32,7 +34,6 @@ from explosion import Explosion
 from hazard import spawn_hazard
 from boss import Boss
 import pickups
-import pickup
 from hud import HUD, draw_screen_flash
 from audio import AudioManager
 import highscore
@@ -97,6 +98,8 @@ def main():
     game_over_screen = GameOverScreen()
     hud = HUD()
     audio_manager = AudioManager()
+    impact_particles = particles.ParticleSystem()
+    world_surf = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
     high_scores_data = highscore.load_high_scores()
     settings_return_state = STATE_MENU
     game_over_stats = {}
@@ -138,6 +141,13 @@ def main():
     screen_flash_start = 0.0
     screen_flash_color = settings.DANGER_RED
 
+    # --- Hit-stop + screen shake (impact "juice") ---
+    hitstop_timer = 0.0          # while > 0, gameplay updates in slow motion
+    world_shake_timer = 0.0      # while > 0, the world layer jitters
+    world_shake_start = 0.0
+    world_shake_magnitude = 0.0
+    was_boosting = False         # edge-detects boost engage for a trail burst
+
     # Remembers where the flying hand's fingertip was last seen (normalized
     # 0.0-1.0 coords). Used to keep tracking the SAME hand across frames
     # when 2 hands are visible, instead of randomly jumping between them.
@@ -155,6 +165,12 @@ def main():
         dt = clock.tick(settings.FPS) / 1000.0
         mouse_pos = pygame.mouse.get_pos()
         screen_flash_timer = max(0.0, screen_flash_timer - dt)
+        hitstop_timer = max(0.0, hitstop_timer - dt)
+        world_shake_timer = max(0.0, world_shake_timer - dt)
+        # While hit-stop is active, gameplay updates in heavy slow-motion
+        # instead of fully freezing -- reads as a punchy "impact beat"
+        # rather than the game just stuttering.
+        effective_dt = dt * 0.05 if hitstop_timer > 0 else dt
         hud.update(dt)
 
         # =====================================================================
@@ -192,6 +208,9 @@ def main():
                     if action == "play":
                         state = STATE_PLAYING
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
+                        was_boosting = False
                     elif action == "exit":
                         running = False
                     elif action == "controls":
@@ -226,6 +245,9 @@ def main():
                         state = STATE_PLAYING
                     elif action == "restart":
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
+                        was_boosting = False
                         state = STATE_PLAYING
                     elif action == "settings":
                         settings_return_state = STATE_PAUSED
@@ -236,6 +258,9 @@ def main():
                     action = game_over_screen.handle_click(mouse_pos)
                     if action == "restart":
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
+                        was_boosting = False
                         state = STATE_PLAYING
                     elif action == "main_menu":
                         state = STATE_MENU
@@ -266,7 +291,10 @@ def main():
             game_over_screen.update(dt, mouse_pos)
 
         if state == STATE_PLAYING:
-            audio_manager.play_action_music()
+            if boss is not None:
+                audio_manager.play_boss_music()
+            else:
+                audio_manager.play_level_music(level)
         else:
             audio_manager.play_menu_music()
 
@@ -333,7 +361,13 @@ def main():
                 kb_dy += KEYBOARD_MOVE_SPEED
 
             boost_requested = (current_gesture == "open_palm") or keys_held[pygame.K_LSHIFT] or keys_held[pygame.K_RSHIFT]
-            player.update(dt, target_x, target_y, kb_dx, kb_dy, boost_requested)
+            player.update(effective_dt, target_x, target_y, kb_dx, kb_dy, boost_requested)
+
+            # Boost-engage trail burst -- fires once on the edge (boost just
+            # started) plus a steady trickle every frame while held.
+            if player.boosting:
+                impact_particles.spawn_boost_trail(player.x, player.y + player.height * 0.5)
+            was_boosting = player.boosting
 
             # --- Shooting: pinch gesture OR Space, gated by cooldown ---
             if (current_gesture == "pinch" or keys_held[pygame.K_SPACE]) and player.can_shoot():
@@ -343,6 +377,8 @@ def main():
                     b.damage = max(1, round(b.damage * player.damage_mult))
                 bullets.extend(new_bullets)
                 player.trigger_shot()
+                audio_manager.play_weapon_sound(player.weapon_name)
+                impact_particles.spawn_muzzle_burst(nose_x, nose_y, weapons.get_color(player.weapon_name))
 
             # --- Shield: fist gesture ---
             if current_gesture == "fist" and player.can_activate_shield():
@@ -357,7 +393,7 @@ def main():
                 player.cycle_weapon(-1)
 
             for bullet in bullets:
-                bullet.update(dt)
+                bullet.update(effective_dt)
             bullets = [b for b in bullets if b.alive]
 
             # Difficulty (level) is frozen solid while a boss fight is in
@@ -405,7 +441,7 @@ def main():
                 hazard_spawn_timer = min(hazard_spawn_timer, HAZARD_SPAWN_INTERVAL * 0.5)
 
             for hazard in hazards:
-                hazard.update(dt)
+                hazard.update(effective_dt)
             hazards = [h for h in hazards if h.alive and not h.is_offscreen()]
 
             for hazard in hazards:
@@ -423,18 +459,27 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
+                        world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             hazards = [h for h in hazards if h.alive]
 
             # --- Boss update + bullets ---
             if boss is not None:
-                fired = boss.update(dt, player.x, player.y)
+                fired = boss.update(effective_dt, player.x, player.y)
                 boss_bullets.extend(fired)
+                if boss.phase_changed_this_frame:
+                    hitstop_timer = 0.10
+                    world_shake_timer = world_shake_start = 0.4
+                    world_shake_magnitude = 8
 
             for bb in boss_bullets:
-                bb.update(dt)
+                bb.update(effective_dt)
             boss_bullets = [b for b in boss_bullets if b.alive]
 
             for bb in boss_bullets:
@@ -452,13 +497,18 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
+                        world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             boss_bullets = [b for b in boss_bullets if b.alive]
 
             for enemy in enemies:
-                enemy.update(dt, player.x, player.y)
+                enemy.update(effective_dt, player.x, player.y)
             enemies = [e for e in enemies if e.alive and not e.is_offscreen()]
 
             for bullet in bullets:
@@ -468,12 +518,13 @@ def main():
                     if bullet.get_rect().colliderect(enemy.get_rect()):
                         enemy.take_damage(bullet.damage)
                         bullet.alive = False
+                        impact_particles.spawn_hit_spark(bullet.x, bullet.y, color=enemy.color)
                         if not enemy.alive:
                             score += int(enemy.score_value * diff_cfg["score_mult"])
                             explosions.append(Explosion(enemy.x, enemy.y, color=enemy.color))
-                            dropped_coin = pickups.maybe_drop_coin(enemy.x, enemy.y)
-                            if dropped_coin is not None:
-                                coins.append(dropped_coin)
+                            dropped_coins = pickups.maybe_drop_coin(enemy.x, enemy.y)
+                            if dropped_coins:
+                                coins.extend(dropped_coins)
                         break
             bullets = [b for b in bullets if b.alive]
 
@@ -482,6 +533,7 @@ def main():
                     if bullet.alive and bullet.get_rect().colliderect(boss.get_rect()):
                         boss.take_damage(bullet.damage)
                         bullet.alive = False
+                        impact_particles.spawn_hit_spark(bullet.x, bullet.y, color=boss.core_color)
                 bullets = [b for b in bullets if b.alive]
 
                 if not boss.alive:
@@ -491,6 +543,9 @@ def main():
                     boss_bullets.clear()
                     boss = None
                     player.trigger_victory_effect()
+                    hitstop_timer = 0.15
+                    world_shake_timer = world_shake_start = 0.5
+                    world_shake_magnitude = 10
 
             for enemy in enemies:
                 if enemy.get_rect().colliderect(player.get_rect()) and player.invincible_timer <= 0:
@@ -509,14 +564,21 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
+                        world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             enemies = [e for e in enemies if e.alive]
 
             for explosion in explosions:
-                explosion.update(dt)
+                explosion.update(effective_dt)
             explosions = [e for e in explosions if e.alive]
+
+            impact_particles.update(effective_dt)
 
             # --- Coin pickups: the actual "earn credits during the run"
             # loop, on top of the flat end-of-run score bonus below. ---
@@ -557,27 +619,41 @@ def main():
         elif state == STATE_HANGAR:
             hangar_screen.draw(screen, progress_data)
         elif state in (STATE_PLAYING, STATE_PAUSED):
+            # World layer (everything that should shake on impact) is drawn
+            # onto its own transparent surface first, then blitted onto the
+            # screen with a small random offset while shake is active. HUD,
+            # popups, banners, and overlays are drawn straight to `screen`
+            # afterward so they stay crisp/readable even mid-shake.
+            world_surf.fill((0, 0, 0, 0))
             for enemy in enemies:
-                enemy.draw(screen)
+                enemy.draw(world_surf)
             for hazard in hazards:
-                hazard.draw(screen)
+                hazard.draw(world_surf)
             for coin in coins:
-                coin.draw(screen)
+                coin.draw(world_surf)
             if boss is not None:
-                boss.draw(screen)
+                boss.draw(world_surf)
             for bullet in bullets:
-                bullet.draw(screen)
+                bullet.draw(world_surf)
             for bullet in boss_bullets:
-                bullet.draw(screen)
+                bullet.draw(world_surf)
             for explosion in explosions:
-                explosion.draw(screen)
-            player.draw(screen)
+                explosion.draw(world_surf)
+            impact_particles.draw(world_surf)
+            player.draw(world_surf)
             hint_surf = small_font.render(
                 "Pinch: shoot | Fist: shield | Palm: EXTREME BOOST | Swipe: weapon | P: pause",
                 True, settings.WHITE
             )
             hint_rect = hint_surf.get_rect(midtop=(settings.SCREEN_WIDTH // 2, 12))
-            screen.blit(hint_surf, hint_rect)
+            world_surf.blit(hint_surf, hint_rect)
+
+            shake_x, shake_y = 0, 0
+            if world_shake_timer > 0 and world_shake_start > 0:
+                intensity = world_shake_magnitude * (world_shake_timer / world_shake_start)
+                shake_x = random.uniform(-intensity, intensity)
+                shake_y = random.uniform(-intensity, intensity)
+            screen.blit(world_surf, (shake_x, shake_y))
 
             hud.draw(screen, player, score, level, progress_data["credits"])
 

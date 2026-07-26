@@ -1,5 +1,5 @@
 {
-  "credits": 1003139,
+  "credits": 1003852,
   "unlocked_ships": [
     "guardian",
     "interceptor",
@@ -8,5 +8,5 @@
     "vindicator"
   ],
   "selected_ship": "vindicator",
-  "difficulty": "normal"
+  "difficulty": "nightmare"
 }

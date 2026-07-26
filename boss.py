@@ -120,6 +120,7 @@ class Boss:
         # --- Phase-change radial flash ---
         self._last_phase = 1
         self.phase_flash_timer = 0.0
+        self.phase_changed_this_frame = False
 
         self.fire_timer = random.uniform(0.8, 1.4)
         self.move_direction = 1
@@ -151,6 +152,7 @@ class Boss:
         """Returns a list of newly-fired Bullet objects (usually empty)."""
         self.time_alive += dt
         self.hit_flash_timer = max(0.0, self.hit_flash_timer - dt)
+        self.phase_changed_this_frame = False
 
         if not self.entered:
             self.entry_elapsed += dt
@@ -164,6 +166,7 @@ class Boss:
         if current_phase != self._last_phase:
             self._last_phase = current_phase
             self.phase_flash_timer = 0.4
+            self.phase_changed_this_frame = True
         self.phase_flash_timer = max(0.0, self.phase_flash_timer - dt)
 
         sway_speed = self.speed * (1 + 0.3 * (current_phase - 1))
