@@ -31,6 +31,8 @@ from enemy import spawn_random_enemy
 from explosion import Explosion
 from hazard import spawn_hazard
 from boss import Boss
+import pickups
+import pickup
 from hud import HUD, draw_screen_flash
 from audio import AudioManager
 import highscore
@@ -107,7 +109,7 @@ def main():
 
     def make_new_run():
         fresh_player = Player(progress_data["selected_ship"])
-        return fresh_player, [], [], [], [], ENEMY_SPAWN_INTERVAL, 0, 1, 0.0, None, [], 0, 0.0
+        return fresh_player, [], [], [], [], ENEMY_SPAWN_INTERVAL, 0, 1, 0.0, None, [], 0, 0.0, [], []
 
     state = STATE_MENU
     running = True
@@ -128,6 +130,8 @@ def main():
     boss_bullets = []
     boss_spawn_index = 0
     boss_intro_timer = 0.0
+    coins = []
+    credit_popups = []  # floating "+N" feedback text when a coin is collected
 
     # --- Screen flash feedback (Step 10) ---
     screen_flash_timer = 0.0
@@ -187,7 +191,7 @@ def main():
                     action = main_menu.handle_click(mouse_pos)
                     if action == "play":
                         state = STATE_PLAYING
-                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer = make_new_run()
+                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
                     elif action == "exit":
                         running = False
                     elif action == "controls":
@@ -221,7 +225,7 @@ def main():
                     if action == "resume":
                         state = STATE_PLAYING
                     elif action == "restart":
-                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer = make_new_run()
+                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
                         state = STATE_PLAYING
                     elif action == "settings":
                         settings_return_state = STATE_PAUSED
@@ -231,7 +235,7 @@ def main():
                 elif state == STATE_GAME_OVER:
                     action = game_over_screen.handle_click(mouse_pos)
                     if action == "restart":
-                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer = make_new_run()
+                        player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
                         state = STATE_PLAYING
                     elif action == "main_menu":
                         state = STATE_MENU
@@ -467,6 +471,9 @@ def main():
                         if not enemy.alive:
                             score += int(enemy.score_value * diff_cfg["score_mult"])
                             explosions.append(Explosion(enemy.x, enemy.y, color=enemy.color))
+                            dropped_coin = pickups.maybe_drop_coin(enemy.x, enemy.y)
+                            if dropped_coin is not None:
+                                coins.append(dropped_coin)
                         break
             bullets = [b for b in bullets if b.alive]
 
@@ -480,6 +487,7 @@ def main():
                 if not boss.alive:
                     score += int(boss.score_value * diff_cfg["score_mult"])
                     explosions.append(Explosion(boss.x, boss.y, color=boss.core_color, big=True))
+                    coins.extend(pickups.spawn_boss_coin_burst(boss.x, boss.y))
                     boss_bullets.clear()
                     boss = None
                     player.trigger_victory_effect()
@@ -510,6 +518,22 @@ def main():
                 explosion.update(dt)
             explosions = [e for e in explosions if e.alive]
 
+            # --- Coin pickups: the actual "earn credits during the run"
+            # loop, on top of the flat end-of-run score bonus below. ---
+            for coin in coins:
+                coin.update(dt)
+            for coin in coins:
+                if coin.alive and coin.get_rect().colliderect(player.get_rect()):
+                    coin.alive = False
+                    progress_data["credits"] += coin.value
+                    progress.save_progress(progress_data)
+                    credit_popups.append({"x": coin.x, "y": coin.y, "text": f"+{coin.value}", "age": 0.0})
+            coins = [c for c in coins if c.alive]
+
+            for popup in credit_popups:
+                popup["age"] += dt
+            credit_popups = [p for p in credit_popups if p["age"] < 1.0]
+
             if player.game_over:
                 credits_earned = score // 5
                 high_scores_data = highscore.save_high_score("PLAYER", score)
@@ -537,6 +561,8 @@ def main():
                 enemy.draw(screen)
             for hazard in hazards:
                 hazard.draw(screen)
+            for coin in coins:
+                coin.draw(screen)
             if boss is not None:
                 boss.draw(screen)
             for bullet in bullets:
@@ -554,6 +580,17 @@ def main():
             screen.blit(hint_surf, hint_rect)
 
             hud.draw(screen, player, score, level, progress_data["credits"])
+
+            for popup in credit_popups:
+                progress_frac = popup["age"] / 1.0
+                rise = progress_frac * 34
+                alpha = max(0, int(255 * (1 - progress_frac)))
+                popup_font = pygame.font.SysFont("consolas", 20, bold=True)
+                popup_surf = popup_font.render(popup["text"], True, settings.GOLD)
+                popup_surf.set_alpha(alpha)
+                screen.blit(popup_surf, popup_surf.get_rect(
+                    center=(popup["x"], popup["y"] - rise)
+                ))
 
             if level_up_timer > 0:
                 banner_font = pygame.font.SysFont("consolas", 48, bold=True)
