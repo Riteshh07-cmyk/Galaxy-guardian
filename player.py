@@ -44,6 +44,7 @@ class Player:
         self.wing_color = ship_cfg["wing_color"]
         self.fire_rate_mult = ship_cfg["fire_rate_mult"]
         self.damage_mult = ship_cfg["damage_mult"]
+        self.damage_reduction = 0.0  # stacked up by the "armor_plating" powerup
 
         self.x = settings.SCREEN_WIDTH / 2
         self.y = settings.SCREEN_HEIGHT - 120
@@ -255,6 +256,7 @@ class Player:
     def take_damage(self, amount):
         if self.invincible_timer > 0 or self.is_shielded:
             return
+        amount = amount * (1.0 - self.damage_reduction)
         self.health -= amount
         self.damage_flash_timer = self.damage_flash_duration
         self.hit_shake_timer = self.hit_shake_duration
@@ -393,16 +395,11 @@ class Player:
                                 (shield_radius + 4, shield_radius + 4), shield_radius, width=2)
             surface.blit(shield_surf, (cx - shield_radius - 4, cy - shield_radius - 4))
 
-        # --- Muzzle flash -- color and size match whichever weapon is
-        # equipped, so a weapon swap is visible even without checking the
-        # HUD badge (plasma gets a fat slow flash, rapid a tiny quick one,
-        # everything else in between). ---
+        # --- Muzzle flash (Step 7) ---
         if self.muzzle_flash_timer > 0:
-            weapon_color = weapons.get_color(self.weapon_name)
-            size_mult = {"plasma": 1.6, "spread": 1.25, "rapid": 0.65}.get(self.weapon_name, 1.0)
             flash_progress = self.muzzle_flash_timer / 0.08  # 1.0 -> 0.0
             nose_x, nose_y = self.get_nose_position()
-            flash_radius = max(2, int((4 + 10 * flash_progress) * size_mult))
+            flash_radius = int(4 + 10 * flash_progress)
             flash_surf = pygame.Surface((flash_radius * 4, flash_radius * 4), pygame.SRCALPHA)
             alpha = int(220 * flash_progress)
             pygame.draw.circle(
@@ -410,7 +407,7 @@ class Player:
                 (flash_radius * 2, flash_radius * 2), flash_radius
             )
             pygame.draw.circle(
-                flash_surf, (*weapon_color, alpha),
+                flash_surf, (*settings.NEON_GREEN, alpha),
                 (flash_radius * 2, flash_radius * 2), flash_radius, width=2
             )
             surface.blit(

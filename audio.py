@@ -1,23 +1,3 @@
-"""
-audio.py
---------
-Music + sound effects, all synthesized in code -- no audio asset files.
-
-Music:
-  - One menu track (calm).
-  - Several "level" tracks that rotate as you climb levels, each a bit
-    faster / brighter than the last, so the soundtrack visibly ramps up
-    zone by zone instead of looping the exact same thing forever.
-  - A separate, more intense boss track that kicks in the instant a boss
-    fight starts and switches back the instant it ends.
-
-Sound effects:
-  - One distinct one-shot "laser" sound per weapon type (normal, double,
-    triple, spread, rapid, plasma), built directly as short numpy wave
-    arrays and handed to pygame as pygame.mixer.Sound objects -- nothing
-    written to disk for these, they just live in memory for the run.
-"""
-
 import os
 import math
 import wave
@@ -29,40 +9,7 @@ import pygame
 import settings
 
 
-SOUND_ASSET_DIR = getattr(settings, "SOUND_ASSET_DIR", "assets/sounds")
-MUSIC_MENU_PATH = getattr(settings, "MUSIC_MENU_PATH", os.path.join(SOUND_ASSET_DIR, "music_menu.wav"))
-DEFAULT_MUSIC_VOLUME = getattr(settings, "DEFAULT_MUSIC_VOLUME", 0.5)
-DEFAULT_SFX_VOLUME = getattr(settings, "DEFAULT_SFX_VOLUME", 0.6)
-
-SAMPLE_RATE = 44100
-
-# --- Level music: (notes, note_duration, volume, waveform) ----------------
-# Each entry is a little faster / brighter than the last, so the deeper
-# you get, the more energetic the loop feels -- without needing a unique
-# file per level (there could be dozens). Tracks just cycle through this
-# list as the level climbs.
-LEVEL_TRACK_DEFS = [
-    ([196, 220, 247, 262, 294, 262, 247, 220] * 3, 0.30, 0.15, "sine"),
-    ([220, 262, 294, 330, 349, 330, 294, 262] * 3, 0.24, 0.16, "square"),
-    ([247, 294, 330, 370, 392, 370, 330, 294] * 3, 0.20, 0.17, "square"),
-    ([262, 311, 349, 392, 440, 392, 349, 311] * 3, 0.16, 0.18, "square"),
-]
-
-BOSS_TRACK_NOTES = [174, 174, 196, 174, 207, 196, 174, 155,
-                     174, 174, 220, 196, 233, 220, 196, 174] * 3
-BOSS_TRACK_DURATION = 0.11
-BOSS_TRACK_VOLUME = 0.22
-
-
-def _level_track_path(index):
-    return os.path.join(SOUND_ASSET_DIR, f"music_level_{index}.wav")
-
-
-def _boss_track_path():
-    return os.path.join(SOUND_ASSET_DIR, "music_boss.wav")
-
-
-def _synth_track(path, notes, note_duration, sample_rate=SAMPLE_RATE, volume=0.22, waveform="square"):
+def _synth_track(path, notes, note_duration, sample_rate=44100, volume=0.22, waveform="square"):
     with wave.open(path, "w") as f:
         f.setnchannels(1)
         f.setsampwidth(2)
@@ -83,93 +30,112 @@ def _synth_track(path, notes, note_duration, sample_rate=SAMPLE_RATE, volume=0.2
 
 
 def ensure_default_music():
-    """Generates every placeholder music track that doesn't already exist
-    on disk. Safe to call every launch -- skips anything already there."""
     try:
-        os.makedirs(SOUND_ASSET_DIR, exist_ok=True)
-
-        if not os.path.isfile(MUSIC_MENU_PATH):
+        os.makedirs(settings.SOUND_ASSET_DIR, exist_ok=True)
+        if not os.path.isfile(settings.MUSIC_MENU_PATH):
             menu_notes = [261, 294, 330, 349, 392, 349, 330, 294] * 3
-            _synth_track(MUSIC_MENU_PATH, menu_notes, note_duration=0.32, volume=0.16, waveform="sine")
-
-        for i, (notes, note_duration, volume, waveform) in enumerate(LEVEL_TRACK_DEFS):
-            path = _level_track_path(i)
-            if not os.path.isfile(path):
-                _synth_track(path, notes, note_duration=note_duration, volume=volume, waveform=waveform)
-
-        boss_path = _boss_track_path()
-        if not os.path.isfile(boss_path):
-            _synth_track(boss_path, BOSS_TRACK_NOTES, note_duration=BOSS_TRACK_DURATION,
-                         volume=BOSS_TRACK_VOLUME, waveform="square")
+            _synth_track(settings.MUSIC_MENU_PATH, menu_notes, note_duration=0.32, volume=0.16, waveform="sine")
+        if not os.path.isfile(settings.MUSIC_ACTION_PATH):
+            action_notes = [196, 196, 220, 196, 233, 220, 196, 174] * 4
+            _synth_track(settings.MUSIC_ACTION_PATH, action_notes, note_duration=0.11, volume=0.22, waveform="square")
     except Exception as e:
         print(f"[audio] could not generate placeholder music: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Weapon sound effects -- short, in-memory only (no files), each weapon
-# gets its own little sonic identity so swapping weapons is audible even
-# with your eyes on the action instead of the HUD badge.
+# Sound effects -- synthesized in memory with numpy (no asset files needed,
+# same philosophy as the placeholder music above). Each is built once at
+# startup and cached, then played via pygame.mixer.Sound.play() which uses
+# its own channels, independent of the looping background music.
 # ---------------------------------------------------------------------------
 
-def _tone_wave(freq, duration, sample_rate=SAMPLE_RATE, waveform="square", volume=0.25, pitch_bend=0.0):
-    """Builds a mono float wave for one tone. pitch_bend is a fractional
-    sweep applied linearly over the note's duration (e.g. -0.3 means the
-    pitch glides down to 70% of freq by the end -- a classic laser 'pew'
-    shape; positive values glide up instead, for a charge-up feel)."""
-    n_samples = max(1, int(sample_rate * duration))
-    t = np.linspace(0, duration, n_samples, endpoint=False)
-    swept_freq = freq * (1.0 + pitch_bend * (t / duration))
-    phase = 2 * np.pi * np.cumsum(swept_freq) / sample_rate
+_SAMPLE_RATE = 44100
 
+
+def _envelope(n_samples, attack=0.05, decay_power=1.6):
+    """Quick attack, smooth power-curve decay -- works for almost any
+    short percussive SFX (shots, hits, blips, chimes)."""
+    t = np.linspace(0, 1, n_samples, endpoint=False)
+    attack_samples = max(1, int(n_samples * attack))
+    env = np.ones(n_samples)
+    env[:attack_samples] = np.linspace(0, 1, attack_samples)
+    decay = (1 - t) ** decay_power
+    return np.minimum(env, 1.0) * decay
+
+
+def _tone_sound(freq_start, freq_end, duration, volume=0.35, waveform="square", decay_power=1.6):
+    n = int(_SAMPLE_RATE * duration)
+    if n <= 0:
+        n = 1
+    t = np.linspace(0, duration, n, endpoint=False)
+    freq = np.linspace(freq_start, freq_end, n)
+    phase = np.cumsum(2 * np.pi * freq / _SAMPLE_RATE)
     if waveform == "square":
         wave_arr = np.sign(np.sin(phase))
-    elif waveform == "saw":
-        wave_arr = 2 * ((phase / (2 * np.pi)) % 1.0) - 1.0
+    elif waveform == "triangle":
+        wave_arr = 2 * np.abs(2 * (phase / (2 * np.pi) - np.floor(phase / (2 * np.pi) + 0.5))) - 1
     else:  # sine
         wave_arr = np.sin(phase)
-
-    fade_len = min(200, n_samples // 4) if n_samples > 8 else 0
-    envelope = np.ones(n_samples)
-    if fade_len > 0:
-        envelope[:fade_len] = np.linspace(0.0, 1.0, fade_len)
-        envelope[-fade_len:] = np.linspace(1.0, 0.0, fade_len)
-
-    return wave_arr * envelope * volume
-
-
-def _make_sound(freq, duration, **kwargs):
-    samples = (_tone_wave(freq, duration, **kwargs) * 32767).astype(np.int16)
+    env = _envelope(n, decay_power=decay_power)
+    samples = (wave_arr * env * volume * 32767).astype(np.int16)
     stereo = np.column_stack([samples, samples])
     return pygame.sndarray.make_sound(np.ascontiguousarray(stereo))
 
 
-def _make_multi_pulse_sound(freq, pulse_duration, count, gap, **kwargs):
-    silence = np.zeros(int(SAMPLE_RATE * gap))
-    parts = []
-    for i in range(count):
-        parts.append(_tone_wave(freq, pulse_duration, **kwargs))
-        if i < count - 1:
-            parts.append(silence)
-    combined = np.concatenate(parts)
-    samples = (combined * 32767).astype(np.int16)
+def _noise_burst_sound(duration, volume=0.35, decay_power=2.2, low_pass=0.0):
+    n = int(_SAMPLE_RATE * duration)
+    if n <= 0:
+        n = 1
+    noise = np.random.uniform(-1, 1, n)
+    if low_pass > 0:
+        # Cheap one-pole low-pass filter to make noise feel like a boom
+        # instead of harsh static.
+        alpha = low_pass
+        filtered = np.empty_like(noise)
+        prev = 0.0
+        for i in range(n):
+            prev = prev + alpha * (noise[i] - prev)
+            filtered[i] = prev
+        noise = filtered
+    env = _envelope(n, attack=0.01, decay_power=decay_power)
+    samples = (noise * env * volume * 32767).astype(np.int16)
     stereo = np.column_stack([samples, samples])
     return pygame.sndarray.make_sound(np.ascontiguousarray(stereo))
 
 
-def _build_weapon_sfx():
-    """Returns {weapon_name: pygame.mixer.Sound}. Each weapon's sound
-    mirrors its personality: normal is a clean single zap, double/triple
-    literally fire multiple quick pulses, spread is a slightly rougher
-    sawtooth (wide, less precise), rapid is a tiny quiet blip (since it
-    fires constantly and shouldn't wall-of-noise the mix), plasma is a
-    low, slower, rising charge-thump."""
+def _chime_sound(freqs, note_duration=0.09, volume=0.3):
+    """A short sequence of clean sine notes -- used for pleasant feedback
+    (coin pickup, victory) rather than combat sounds."""
+    n_per_note = int(_SAMPLE_RATE * note_duration)
+    chunks = []
+    for freq in freqs:
+        t = np.linspace(0, note_duration, n_per_note, endpoint=False)
+        wave_arr = np.sin(2 * np.pi * freq * t)
+        env = _envelope(n_per_note, attack=0.02, decay_power=1.2)
+        chunks.append(wave_arr * env)
+    samples = (np.concatenate(chunks) * volume * 32767).astype(np.int16)
+    stereo = np.column_stack([samples, samples])
+    return pygame.sndarray.make_sound(np.ascontiguousarray(stereo))
+
+
+def _build_sfx_library():
+    """Builds every sound effect once. Returns a dict; on any failure
+    (e.g. mixer not available) returns an empty dict so callers can fail
+    silently, same philosophy as the rest of audio.py."""
     return {
-        "normal": _make_sound(880, 0.09, waveform="square", volume=0.22, pitch_bend=-0.3),
-        "double": _make_multi_pulse_sound(760, 0.07, 2, 0.045, waveform="square", volume=0.20, pitch_bend=-0.25),
-        "triple": _make_multi_pulse_sound(700, 0.055, 3, 0.04, waveform="square", volume=0.18, pitch_bend=-0.2),
-        "spread": _make_sound(620, 0.11, waveform="saw", volume=0.18, pitch_bend=-0.15),
-        "rapid": _make_sound(1200, 0.045, waveform="square", volume=0.14, pitch_bend=-0.4),
-        "plasma": _make_sound(220, 0.22, waveform="sine", volume=0.28, pitch_bend=0.6),
+        "shoot_light": _tone_sound(880, 520, 0.07, volume=0.22, waveform="square", decay_power=2.0),
+        "shoot_heavy": _tone_sound(420, 180, 0.11, volume=0.28, waveform="square", decay_power=1.8),
+        "explosion": _noise_burst_sound(0.32, volume=0.35, decay_power=2.0, low_pass=0.35),
+        "explosion_big": _noise_burst_sound(0.55, volume=0.42, decay_power=1.6, low_pass=0.22),
+        "player_hit": _tone_sound(220, 80, 0.18, volume=0.32, waveform="triangle", decay_power=1.4),
+        "shield_block": _tone_sound(700, 900, 0.12, volume=0.24, waveform="triangle", decay_power=1.8),
+        "shield_activate": _tone_sound(300, 700, 0.16, volume=0.22, waveform="sine", decay_power=1.3),
+        "boost_engage": _noise_burst_sound(0.22, volume=0.16, decay_power=1.2, low_pass=0.5),
+        "coin": _chime_sound([880, 1320], note_duration=0.06, volume=0.28),
+        "boss_phase": _tone_sound(180, 90, 0.4, volume=0.3, waveform="square", decay_power=1.1),
+        "boss_victory": _chime_sound([523, 659, 784, 1046], note_duration=0.1, volume=0.3),
+        "powerup_select": _chime_sound([659, 880, 1046], note_duration=0.08, volume=0.3),
+        "ui_click": _tone_sound(500, 700, 0.05, volume=0.18, waveform="square", decay_power=2.5),
     }
 
 
@@ -177,26 +143,22 @@ class AudioManager:
     def __init__(self):
         self.available = True
         try:
-            pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=2)
+            pygame.mixer.init()
         except Exception as e:
             print(f"[audio] mixer init failed: {e}")
             self.available = False
 
-        self.volume = DEFAULT_MUSIC_VOLUME
-        self.sfx_volume = DEFAULT_SFX_VOLUME
+        self.volume = settings.DEFAULT_MUSIC_VOLUME
         self.current_track = None
-
-        self.level_music_paths = [_level_track_path(i) for i in range(len(LEVEL_TRACK_DEFS))]
-        self.boss_music_path = _boss_track_path()
-
-        self.weapon_sfx = {}
+        self.sfx = {}
 
         if self.available:
             ensure_default_music()
             try:
-                self.weapon_sfx = _build_weapon_sfx()
+                self.sfx = _build_sfx_library()
             except Exception as e:
-                print(f"[audio] could not build weapon sfx: {e}")
+                print(f"[audio] could not synthesize sound effects: {e}")
+                self.sfx = {}
 
     def _play(self, path):
         if not self.available or self.current_track == path:
@@ -215,41 +177,27 @@ class AudioManager:
             print(f"[audio] failed to play {path}: {e}")
 
     def play_menu_music(self):
-        self._play(MUSIC_MENU_PATH)
-
-    def play_level_music(self, level):
-        """Rotates through LEVEL_TRACK_DEFS as the level climbs -- each
-        track a bit faster/brighter than the last, cycling back to the
-        start once you run past the end of the list."""
-        if not self.level_music_paths:
-            return
-        index = (max(1, level) - 1) % len(self.level_music_paths)
-        self._play(self.level_music_paths[index])
-
-    def play_boss_music(self):
-        self._play(self.boss_music_path)
+        self._play(settings.MUSIC_MENU_PATH)
 
     def play_action_music(self):
-        """Kept for backward compatibility with older callers -- maps
-        onto the first level track."""
-        self.play_level_music(1)
-
-    def play_weapon_sound(self, weapon_name):
-        if not self.available:
-            return
-        sound = self.weapon_sfx.get(weapon_name)
-        if sound is None:
-            return
-        try:
-            sound.set_volume(self.sfx_volume)
-            sound.play()
-        except Exception as e:
-            print(f"[audio] failed to play weapon sfx '{weapon_name}': {e}")
+        self._play(settings.MUSIC_ACTION_PATH)
 
     def set_volume(self, volume):
         self.volume = max(0.0, min(1.0, volume))
         if self.available:
             pygame.mixer.music.set_volume(self.volume)
 
-    def set_sfx_volume(self, volume):
-        self.sfx_volume = max(0.0, min(1.0, volume))
+    def play_sfx(self, name):
+        """Plays a synthesized one-shot sound effect by name. Fails
+        silently if audio isn't available or the name is unknown --
+        gameplay should never break because of a missing sound."""
+        if not self.available:
+            return
+        sound = self.sfx.get(name)
+        if sound is None:
+            return
+        try:
+            sound.set_volume(self.volume)
+            sound.play()
+        except Exception as e:
+            print(f"[audio] failed to play sfx '{name}': {e}")

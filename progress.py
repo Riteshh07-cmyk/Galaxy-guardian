@@ -8,6 +8,7 @@ DEFAULT_PROGRESS = {
     "unlocked_ships": ["guardian"],
     "selected_ship": "guardian",
     "difficulty": "normal",
+    "fullscreen": False,
 }
 
 
