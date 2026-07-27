@@ -115,6 +115,7 @@ def main():
     game_over_screen = GameOverScreen()
     hud = HUD()
     audio_manager = AudioManager()
+    audio_manager.set_volume(progress_data.get("master_volume", settings.DEFAULT_MUSIC_VOLUME))
     impact_particles = particles.ParticleSystem()
     high_scores_data = highscore.load_high_scores()
     settings_return_state = STATE_MENU
@@ -123,7 +124,9 @@ def main():
     camera = CameraManager()
     camera.start()
     hand_tracker = HandTracker(max_num_hands=2)
-    gesture_recognizer = GestureRecognizer()
+    gesture_recognizer = GestureRecognizer(
+        pinch_threshold=progress_data.get("gesture_sensitivity", 0.45)
+    )
     swipe_detector = SwipeDetector()
 
     def make_new_run():
@@ -194,6 +197,9 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
+            elif event.type == pygame.WINDOWFOCUSLOST and state == STATE_PLAYING:
+                state = STATE_PAUSED
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -308,9 +314,21 @@ def main():
                         state = STATE_PLAYING
 
             if state == STATE_SETTINGS:
-                settings_screen.handle_event(event, audio_manager)
+                settings_screen.handle_event(event, audio_manager, progress_data)
+                gesture_recognizer.set_sensitivity(progress_data.get("gesture_sensitivity", 0.45))
             elif state == STATE_PAUSED:
                 pause_screen.handle_event(event, audio_manager)
+
+            if state in (STATE_SETTINGS, STATE_PAUSED) and event.type in (
+                pygame.MOUSEBUTTONUP, pygame.MOUSEBUTTONDOWN
+            ):
+                changed = progress_data.get("master_volume") != audio_manager.volume
+                if changed:
+                    progress_data["master_volume"] = audio_manager.volume
+                if event.type == pygame.MOUSEBUTTONUP and state == STATE_SETTINGS:
+                    progress.save_progress(progress_data)
+                elif changed:
+                    progress.save_progress(progress_data)
 
         # =====================================================================
         # 2. UPDATE -- figure out what's happening this frame
@@ -843,4 +861,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        import datetime
+        try:
+            with open(settings.LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(f"\n--- Crash at {datetime.datetime.now().isoformat()} ---\n")
+                f.write(traceback.format_exc())
+            print(f"[FATAL] Game crashed. Details written to {settings.LOG_PATH}")
+        except Exception:
+            traceback.print_exc()
+        raise

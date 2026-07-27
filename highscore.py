@@ -2,7 +2,9 @@ import json
 import os
 import datetime
 
-HS_PATH = "highscores.json"
+import settings
+
+HS_PATH = settings.HIGHSCORES_SAVE_PATH
 
 
 def load_high_scores():

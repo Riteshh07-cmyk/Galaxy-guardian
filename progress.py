@@ -1,7 +1,9 @@
 import json
 import os
 
-PROGRESS_PATH = "progress.json"
+import settings
+
+PROGRESS_PATH = settings.PROGRESS_SAVE_PATH
 
 DEFAULT_PROGRESS = {
     "credits": 0,
@@ -9,6 +11,8 @@ DEFAULT_PROGRESS = {
     "selected_ship": "guardian",
     "difficulty": "normal",
     "fullscreen": False,
+    "master_volume": 0.6,
+    "gesture_sensitivity": 0.45,
 }
 
 

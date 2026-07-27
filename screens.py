@@ -88,11 +88,18 @@ class SettingsScreen(BackScreenBase):
         self.mute_button = Button("MUTE", (self.slider_rect.right + 110, self.slider_rect.centery),
                                    "mute", width=110, height=36)
 
+        # --- Gesture sensitivity slider -- controls how close thumb+index
+        # need to be to register as a pinch. Lower = tighter/more precise
+        # pinch required; higher = more forgiving, easier to trigger. ---
+        self.sens_slider_rect = pygame.Rect(settings.SCREEN_WIDTH // 2 - 150, 280, 300, 10)
+        self.sens_dragging = False
+        self.sens_min, self.sens_max = 0.15, 0.70
+
         # --- Difficulty selector -- picks from settings.DIFFICULTY_LEVELS,
         # which was already defined but never actually wired up anywhere. ---
         self.difficulty_buttons = []
         cx = settings.SCREEN_WIDTH // 2
-        self.diff_y = 360
+        self.diff_y = 400
         gap = 190
         count = len(settings.DIFFICULTY_ORDER)
         start_x = cx - gap * (count - 1) / 2
@@ -102,7 +109,7 @@ class SettingsScreen(BackScreenBase):
             self.difficulty_buttons.append(btn)
 
         # --- Extra toggles ---
-        toggle_y = 480
+        toggle_y = 540
         self.debug_toggle_button = Button("DEBUG OVERLAY", (cx - 160, toggle_y), "toggle_debug", width=260, height=44)
         self.camera_toggle_button = Button("CAMERA PREVIEW", (cx + 160, toggle_y), "toggle_camera", width=260, height=44)
         self.fullscreen_toggle_button = Button("DISPLAY MODE", (cx, toggle_y + 56), "toggle_fullscreen", width=260, height=44)
@@ -111,7 +118,12 @@ class SettingsScreen(BackScreenBase):
         x = self.slider_rect.x + int(volume * self.slider_rect.width)
         return pygame.Rect(x - 8, self.slider_rect.y - 6, 16, 22)
 
-    def handle_event(self, event, audio_manager):
+    def _sens_knob_rect(self, sensitivity):
+        frac = (sensitivity - self.sens_min) / (self.sens_max - self.sens_min)
+        x = self.sens_slider_rect.x + int(frac * self.sens_slider_rect.width)
+        return pygame.Rect(x - 8, self.sens_slider_rect.y - 6, 16, 22)
+
+    def handle_event(self, event, audio_manager, progress_data):
         if event.type == pygame.MOUSEBUTTONDOWN:
             if (self.slider_rect.collidepoint(event.pos) or
                     self._knob_rect(audio_manager.volume).collidepoint(event.pos)):
@@ -122,11 +134,19 @@ class SettingsScreen(BackScreenBase):
                     audio_manager.set_volume(0.0)
                 else:
                     audio_manager.set_volume(self._pre_mute_volume or 0.6)
+            elif (self.sens_slider_rect.collidepoint(event.pos) or
+                    self._sens_knob_rect(progress_data.get("gesture_sensitivity", 0.45)).collidepoint(event.pos)):
+                self.sens_dragging = True
         elif event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
+            self.sens_dragging = False
         elif event.type == pygame.MOUSEMOTION and self.dragging:
             rel = (event.pos[0] - self.slider_rect.x) / self.slider_rect.width
             audio_manager.set_volume(rel)
+        elif event.type == pygame.MOUSEMOTION and self.sens_dragging:
+            rel = (event.pos[0] - self.sens_slider_rect.x) / self.sens_slider_rect.width
+            rel = max(0.0, min(1.0, rel))
+            progress_data["gesture_sensitivity"] = self.sens_min + rel * (self.sens_max - self.sens_min)
 
     def update(self, dt, mouse_pos):
         super().update(dt, mouse_pos)
@@ -178,8 +198,26 @@ class SettingsScreen(BackScreenBase):
         self.mute_button.label = "UNMUTE" if audio_manager.volume <= 0 else "MUTE"
         self.mute_button.draw(surface)
 
+        # --- Gesture sensitivity slider ---
+        sens_val = progress_data.get("gesture_sensitivity", 0.45)
+        sens_label = self.body_font.render("PINCH SENSITIVITY", True, settings.WHITE)
+        surface.blit(sens_label, (self.sens_slider_rect.x, self.sens_slider_rect.y - 34))
+
+        pygame.draw.rect(surface, (60, 60, 60), self.sens_slider_rect, border_radius=4)
+        sens_frac = (sens_val - self.sens_min) / (self.sens_max - self.sens_min)
+        sens_fill_rect = pygame.Rect(
+            self.sens_slider_rect.x, self.sens_slider_rect.y,
+            int(self.sens_slider_rect.width * sens_frac), self.sens_slider_rect.height
+        )
+        pygame.draw.rect(surface, settings.NEON_PURPLE, sens_fill_rect, border_radius=4)
+        pygame.draw.rect(surface, settings.WHITE, self._sens_knob_rect(sens_val), border_radius=4)
+
+        sens_desc = "TIGHT (precise)" if sens_frac < 0.35 else "LOOSE (forgiving)" if sens_frac > 0.65 else "BALANCED"
+        sens_s = self.body_font.render(sens_desc, True, settings.NEON_PURPLE)
+        surface.blit(sens_s, (self.sens_slider_rect.right + 20, self.sens_slider_rect.y - 6))
+
         diff_label = self.body_font.render("DIFFICULTY", True, settings.WHITE)
-        surface.blit(diff_label, (settings.SCREEN_WIDTH // 2 - diff_label.get_width() // 2, 300))
+        surface.blit(diff_label, (settings.SCREEN_WIDTH // 2 - diff_label.get_width() // 2, 340))
 
         current_diff = progress_data.get("difficulty", "normal")
         for btn in self.difficulty_buttons:

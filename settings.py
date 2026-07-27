@@ -9,6 +9,21 @@ window size or a color, you change it once, here, and everything
 that imports settings.py picks it up automatically.
 """
 
+import sys
+import os
+
+# Resolve paths relative to the exe (when frozen by PyInstaller) or the
+# script file (when run as `python main.py`), NOT the current working
+# directory -- cwd can vary based on how the exe is launched (shortcut,
+# double-click, "run as admin", different folder), which would otherwise
+# silently break save files and asset loading for other people.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+    ASSET_BASE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)  # bundled read-only assets
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    ASSET_BASE_DIR = BASE_DIR
+
 # ---------------------------------------------------------------------------
 # WINDOW / DISPLAY
 # ---------------------------------------------------------------------------
@@ -32,7 +47,7 @@ GOLD = (255, 210, 60)
 # ---------------------------------------------------------------------------
 # FOLDER PATHS
 # ---------------------------------------------------------------------------
-ASSET_DIR = "assets"
+ASSET_DIR = os.path.join(ASSET_BASE_DIR, "assets")
 PLAYER_ASSET_DIR = f"{ASSET_DIR}/player"
 ENEMY_ASSET_DIR = f"{ASSET_DIR}/enemy"
 BOSS_ASSET_DIR = f"{ASSET_DIR}/boss"
@@ -41,6 +56,14 @@ EFFECTS_ASSET_DIR = f"{ASSET_DIR}/effects"
 SOUND_ASSET_DIR = f"{ASSET_DIR}/sounds"
 FONT_ASSET_DIR = f"{ASSET_DIR}/fonts"
 UI_ASSET_DIR = f"{ASSET_DIR}/ui"
+
+# Save data always lives next to the exe/script (BASE_DIR), never inside
+# the PyInstaller temp bundle (_MEIPASS), so progress/high scores persist
+# across launches instead of vanishing into a wiped temp folder.
+SAVE_DIR = BASE_DIR
+PROGRESS_SAVE_PATH = os.path.join(SAVE_DIR, "progress.json")
+HIGHSCORES_SAVE_PATH = os.path.join(SAVE_DIR, "highscores.json")
+LOG_PATH = os.path.join(SAVE_DIR, "crash_log.txt")
 
 MUSIC_MENU_PATH = f"{SOUND_ASSET_DIR}/menu_theme.wav"
 MUSIC_ACTION_PATH = f"{SOUND_ASSET_DIR}/action_theme.wav"

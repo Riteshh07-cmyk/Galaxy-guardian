@@ -160,6 +160,12 @@ class GestureRecognizer:
         self.pinch_threshold = pinch_threshold
         self.confirmed_gesture = "none"
 
+    def set_sensitivity(self, pinch_threshold):
+        """Lets settings UI adjust pinch sensitivity live -- higher value
+        = fingers can be farther apart and still register as a pinch
+        (more forgiving); lower = requires a tighter, more precise pinch."""
+        self.pinch_threshold = max(0.15, min(0.7, pinch_threshold))
+
     def _fingers_extended(self, landmarks):
         """Returns [thumb, index, middle, ring, pinky] as True/False."""
         # Thumb: extended if its tip is much farther from the pinky-MCP
