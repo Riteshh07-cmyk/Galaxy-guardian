@@ -6,8 +6,22 @@ Starting small on purpose -- we'll add more here as later steps need them
 (e.g. lerp/easing helpers, vector math, collision helpers).
 """
 
+import os
+import sys
+
 import cv2
 import pygame
+
+
+def resource_path(relative_path):
+    """Resolves an asset path so it works BOTH when run as `python main.py`
+    AND when frozen into a .exe with PyInstaller. Frozen builds unpack
+    bundled data (via --add-data) into a temp folder at sys._MEIPASS --
+    a plain relative path like 'assets/ui/logo.png' only works in the
+    unfrozen case, so this is the fix for assets/icon "not showing up"
+    in the built .exe."""
+    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base_path, relative_path)
 
 
 def cv2_frame_to_pygame_surface(frame):

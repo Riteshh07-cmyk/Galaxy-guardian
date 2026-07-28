@@ -12,14 +12,27 @@ Design choice: MainMenu doesn't know anything about pygame events directly
 handling "what to do" -- it just tells main.py "the player clicked PLAY"
 and main.py decides what that means. This keeps menu.py reusable and
 main.py in charge of overall game flow.
+
+UPGRADE: the main menu now displays a real logo image (assets/ui/logo.png)
+instead of the hand-drawn crest + lettered title. If the image is missing
+or fails to load for any reason, it cleanly falls back to the original
+procedural logo/title so the menu never breaks.
 """
 
+import os
 import math
 import random
 
 import pygame
 
 import settings
+from utils import resource_path
+
+try:
+    from PIL import Image as PILImage, ImageSequence
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 
 def _ease_out_cubic(t):
@@ -61,6 +74,62 @@ def _load_body_font(size, bold=False):
     if path:
         return pygame.font.Font(path, size)
     return pygame.font.SysFont("consolas", size, bold=bold)
+
+
+def _load_logo_image(max_width=680):
+    """Loads assets/ui/logo.png (or .jpg as a fallback) and scales it down
+    to max_width, preserving aspect ratio. Returns None on any failure so
+    the caller can fall back to the procedural logo instead of crashing."""
+    candidates = [
+        resource_path(os.path.join(settings.UI_ASSET_DIR, "logo.png")),
+        resource_path(os.path.join(settings.UI_ASSET_DIR, "logo.jpg")),
+    ]
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            raw = pygame.image.load(path).convert_alpha()
+            if raw.get_width() > max_width:
+                scale = max_width / raw.get_width()
+                raw = pygame.transform.smoothscale(
+                    raw, (max_width, int(raw.get_height() * scale))
+                )
+            return raw
+        except Exception as e:
+            print(f"[menu] could not load logo image '{path}': {e}")
+    return None
+
+
+def _load_logo_frames(max_width=460):
+    """Loads assets/ui/logo.gif as an animated sequence (needs Pillow).
+    Falls back to the static _load_logo_image() (png/jpg) if there's no
+    gif, or if Pillow isn't installed. Always returns (frames, durations)
+    -- frames is a list of scaled pygame Surfaces (length 1 = static),
+    durations is the matching list of seconds-per-frame."""
+    gif_path = resource_path(os.path.join(settings.UI_ASSET_DIR, "logo.gif"))
+    if _PIL_AVAILABLE and os.path.isfile(gif_path):
+        try:
+            pil_img = PILImage.open(gif_path)
+            frames, durations = [], []
+            for frame in ImageSequence.Iterator(pil_img):
+                rgba = frame.convert("RGBA")
+                if rgba.width > max_width:
+                    scale = max_width / rgba.width
+                    rgba = rgba.resize(
+                        (max_width, int(rgba.height * scale)), PILImage.LANCZOS
+                    )
+                surf = pygame.image.fromstring(rgba.tobytes(), rgba.size, "RGBA").convert_alpha()
+                frames.append(surf)
+                durations.append(max(20, frame.info.get("duration", 80)) / 1000.0)
+            if frames:
+                return frames, durations
+        except Exception as e:
+            print(f"[menu] could not load animated logo '{gif_path}': {e}")
+
+    static = _load_logo_image(max_width)
+    if static is not None:
+        return [static], [1.0]
+    return None, None
 
 
 class Button:
@@ -199,21 +268,17 @@ def _draw_wreath(surface, cx, cy, r, color):
 
 
 def _draw_logo(surface, cx, cy, t, radius=56):
-    """The game's emblem: a crest-style badge -- a slow rotating tick
+    """FALLBACK ONLY -- used if assets/ui/logo.png can't be loaded.
+    The game's emblem: a crest-style badge -- a slow rotating tick
     ring, a beveled double ring, a shield-shaped plate holding a
-    twin-wing ship silhouette (echoing the player/boss ship design
-    language), and a laurel flourish underneath for a more official,
-    'professional' badge feel. Kept deliberately restrained -- fewer
-    moving parts reads as more polished, not less."""
+    twin-wing ship silhouette, and a laurel flourish underneath."""
 
-    # --- Ambient glow ---
     glow_pad = radius + 30
     glow_surf = pygame.Surface((glow_pad * 2, glow_pad * 2), pygame.SRCALPHA)
     pulse = 0.7 + 0.3 * abs(math.sin(t * 1.5))
     pygame.draw.circle(glow_surf, (*settings.NEON_BLUE, int(45 * pulse)), (glow_pad, glow_pad), int(radius * 1.35))
     surface.blit(glow_surf, (cx - glow_pad, cy - glow_pad))
 
-    # --- Outer tick ring (slow rotation, uniform weight) ---
     tick_count = 20
     for i in range(tick_count):
         angle = math.radians((360 / tick_count) * i + t * 10)
@@ -225,14 +290,11 @@ def _draw_logo(surface, cx, cy, t, radius=56):
         y2 = cy + math.sin(angle) * r_in
         pygame.draw.line(surface, settings.NEON_BLUE, (x1, y1), (x2, y2), width=2 if long_tick else 1)
 
-    # --- Beveled double ring (the "metallic" badge edge) ---
     pygame.draw.circle(surface, (70, 76, 100), (int(cx), int(cy)), int(radius * 0.86), width=4)
     pygame.draw.circle(surface, (150, 160, 190), (int(cx), int(cy)), int(radius * 0.86), width=1)
 
-    # --- Laurel flourish beneath the badge ---
     _draw_wreath(surface, cx, cy + radius * 0.05, radius * 0.78, settings.GOLD)
 
-    # --- Shield-shaped inner plate ---
     r = radius * 0.72
     shield_pts = [
         (cx - r * 0.5, cy - r * 0.95),
@@ -248,7 +310,6 @@ def _draw_logo(surface, cx, cy, t, radius=56):
     pygame.draw.polygon(surface, (12, 14, 30), shield_pts)
     pygame.draw.polygon(surface, settings.NEON_PURPLE, shield_pts, width=2)
 
-    # --- Twin-wing ship silhouette inside the shield ---
     hw, hh = r * 0.5, r * 0.55
     body = [
         (cx, cy - hh * 0.85),
@@ -263,7 +324,6 @@ def _draw_logo(surface, cx, cy, t, radius=56):
     pygame.draw.polygon(surface, settings.GOLD, body)
     pygame.draw.polygon(surface, settings.WHITE, body, width=1)
 
-    # Pulsing engine-core glow beneath the ship
     core_pulse = 0.6 + 0.4 * abs(math.sin(t * 5))
     core_r = int(3 + 2 * core_pulse)
     pygame.draw.circle(surface, settings.NEON_GREEN, (int(cx), int(cy + hh * 0.6)), core_r)
@@ -281,13 +341,20 @@ class MainMenu:
 
         self.title_text = settings.GAME_TITLE.upper()
 
+        # --- Real logo image (upgrade) -- falls back to the procedural
+        # crest+lettering below if it can't be found/loaded. ---
+        self.logo_frames, self.logo_frame_durations = _load_logo_frames(max_width=460)
+        self.logo_frame_index = 0
+        self.logo_frame_timer = 0.0
+
         center_x = settings.SCREEN_WIDTH // 2
-        start_y = 362
-        gap = 58
+        start_y = 392
+        gap = 50
 
         labels_and_actions = [
             ("PLAY", "play"),
             ("HANGAR", "hangar"),
+            ("ARMORY", "armory"),
             ("CONTROLS", "controls"),
             ("HIGH SCORES", "high_scores"),
             ("SETTINGS", "settings"),
@@ -295,7 +362,7 @@ class MainMenu:
         ]
 
         self.buttons = [
-            Button(label, (center_x, start_y + i * gap), action)
+            Button(label, (center_x, start_y + i * gap), action, width=280, height=46)
             for i, (label, action) in enumerate(labels_and_actions)
         ]
 
@@ -315,6 +382,11 @@ class MainMenu:
 
     def update(self, dt, mouse_pos):
         self.time_elapsed += dt
+        if self.logo_frames and len(self.logo_frames) > 1:
+            self.logo_frame_timer += dt
+            if self.logo_frame_timer >= self.logo_frame_durations[self.logo_frame_index]:
+                self.logo_frame_timer = 0.0
+                self.logo_frame_index = (self.logo_frame_index + 1) % len(self.logo_frames)
         for button in self.buttons:
             button.update(dt, mouse_pos)
         for p in self.particles:
@@ -324,17 +396,14 @@ class MainMenu:
                 p["x"] = random.uniform(0, settings.SCREEN_WIDTH)
 
     def _draw_title(self, surface, title_y):
-        """Renders the title letter-by-letter, each one fading + sliding
-        up into place with a staggered delay -- a one-time "materializing"
-        entrance the first time the menu appears."""
+        """FALLBACK ONLY (no logo image available). Renders the title
+        letter-by-letter, each one fading + sliding up into place with a
+        staggered delay."""
         cx = settings.SCREEN_WIDTH // 2
         widths = [self.title_font.size(ch)[0] for ch in self.title_text]
         total_w = sum(widths)
         start_x = cx - total_w // 2
 
-        # Static ambient glow behind the whole title (always fully visible,
-        # so the letters look like they're materializing out of it). Uses
-        # a real shrink/scale blur instead of stacked offset copies.
         glow_text = _blurred_text(self.title_text, self.title_font, settings.NEON_BLUE, alpha=140)
         glow_rect = glow_text.get_rect(center=(cx, title_y))
         surface.blit(glow_text, glow_rect)
@@ -359,6 +428,34 @@ class MainMenu:
 
         return pygame.Rect(start_x, title_y - self.title_font.get_height() // 2, total_w, self.title_font.get_height())
 
+    def _draw_logo_image(self, surface, top_y):
+        """Draws the real logo image, gently bobbing + fading in on first
+        appearance, with a soft ambient glow behind it so it doesn't look
+        pasted flat onto the starfield. Returns the rect it was drawn in
+        (used to lay the buttons out below it)."""
+        bob_offset = math.sin(self.time_elapsed * 1.5) * 6
+        eased = _ease_out_cubic(self.time_elapsed / 0.6)
+        alpha = int(255 * eased)
+        y_off = (1 - eased) * 24
+
+        img = self.logo_frames[self.logo_frame_index]
+        rect = img.get_rect(center=(settings.SCREEN_WIDTH // 2, top_y + bob_offset + y_off))
+
+        # Soft glow behind the logo
+        glow_surf = pygame.Surface((rect.width + 80, rect.height + 80), pygame.SRCALPHA)
+        pulse = 0.7 + 0.3 * abs(math.sin(self.time_elapsed * 1.5))
+        pygame.draw.ellipse(glow_surf, (*settings.NEON_BLUE, int(40 * pulse * eased)), glow_surf.get_rect())
+        surface.blit(glow_surf, (rect.x - 40, rect.y - 40))
+
+        if alpha < 255:
+            faded = img.copy()
+            faded.set_alpha(alpha)
+            surface.blit(faded, rect.topleft)
+        else:
+            surface.blit(img, rect.topleft)
+
+        return rect
+
     def draw(self, surface):
         _draw_background_motifs(surface, self.time_elapsed)
         _draw_corner_brackets(surface, self.time_elapsed)
@@ -369,32 +466,37 @@ class MainMenu:
             alpha = int(140 * twinkle)
             pygame.draw.circle(surface, (*settings.WHITE, alpha), (int(p["x"]), int(p["y"])), p["size"])
 
-        # Title + logo gently bob together as one unit
-        bob_offset = math.sin(self.time_elapsed * 1.5) * 6
-        logo_y = 98 + bob_offset
-        title_y = 200 + bob_offset
+        if self.logo_frames:
+            # --- Real logo image path (upgrade) ---
+            logo_rect = self._draw_logo_image(surface, top_y=163)
+            subtitle_y = logo_rect.bottom + 10
+        else:
+            # --- Fallback: original procedural crest + lettered title ---
+            bob_offset = math.sin(self.time_elapsed * 1.5) * 6
+            logo_y = 98 + bob_offset
+            title_y = 200 + bob_offset
 
-        _draw_logo(surface, settings.SCREEN_WIDTH // 2, logo_y, self.time_elapsed)
-        title_rect = self._draw_title(surface, title_y)
+            _draw_logo(surface, settings.SCREEN_WIDTH // 2, logo_y, self.time_elapsed)
+            title_rect = self._draw_title(surface, title_y)
 
-        # Flanking chevrons framing the title, like a sci-fi logotype lockup
-        chevron_alpha = int(255 * _ease_out_cubic((self.time_elapsed - 0.9) / 0.4))
-        if chevron_alpha > 0:
-            chevron_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            gap_x = title_rect.width // 2 + 30
-            for side in (-1, 1):
-                base_x = title_rect.centerx + side * gap_x
-                pts = [
-                    (base_x, title_rect.centery - 14),
-                    (base_x + side * 16, title_rect.centery),
-                    (base_x, title_rect.centery + 14),
-                ]
-                pygame.draw.polygon(chevron_surf, (*settings.NEON_PURPLE, chevron_alpha), pts, width=3)
-            surface.blit(chevron_surf, (0, 0))
+            chevron_alpha = int(255 * _ease_out_cubic((self.time_elapsed - 0.9) / 0.4))
+            if chevron_alpha > 0:
+                chevron_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                gap_x = title_rect.width // 2 + 30
+                for side in (-1, 1):
+                    base_x = title_rect.centerx + side * gap_x
+                    pts = [
+                        (base_x, title_rect.centery - 14),
+                        (base_x + side * 16, title_rect.centery),
+                        (base_x, title_rect.centery + 14),
+                    ]
+                    pygame.draw.polygon(chevron_surf, (*settings.NEON_PURPLE, chevron_alpha), pts, width=3)
+                surface.blit(chevron_surf, (0, 0))
 
-        # Subtitle fades in after the title finishes revealing
+            subtitle_y = title_y + 46
+
+        # Subtitle fades in after the logo/title finishes revealing
         subtitle_alpha = int(255 * _ease_out_cubic((self.time_elapsed - 1.1) / 0.5))
-        subtitle_y = title_y + 46
         if subtitle_alpha > 0:
             subtitle_surf = self.subtitle_font.render(
                 "GESTURE CONTROLLED SPACE SHOOTER", True, settings.NEON_PURPLE
@@ -419,7 +521,7 @@ class MainMenu:
             x_offset = int((1 - eased) * 240)
             button.draw(surface, x_offset=x_offset)
 
-        version_surf = self.tag_font.render("v1.0", True, (110, 120, 150))
+        version_surf = self.tag_font.render("v1.2", True, (110, 120, 150))
         surface.blit(version_surf, (settings.SCREEN_WIDTH - version_surf.get_width() - 20,
                                      settings.SCREEN_HEIGHT - 28))
 

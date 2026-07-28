@@ -16,11 +16,13 @@ Everything else (pinch to fire, cooldown, muzzle flash) works exactly
 like Step 7 -- just now it fires whatever weapon is currently selected.
 """
 
+import os
 import sys
 import random
 import pygame
 
 import settings
+import particles
 from background import Starfield
 from menu import MainMenu
 from camera import CameraManager
@@ -33,15 +35,13 @@ from explosion import Explosion
 from hazard import spawn_hazard
 from boss import Boss
 import pickups
-import powerups
 from hud import HUD, draw_screen_flash
 from audio import AudioManager
-import particles
 import highscore
 import progress
 import ships
-from screens import ControlsScreen, HighScoresScreen, SettingsScreen, HangarScreen, PauseScreen, GameOverScreen, PowerupScreen
-from utils import cv2_frame_to_pygame_surface
+from screens import ControlsScreen, HighScoresScreen, SettingsScreen, HangarScreen, ArmoryScreen, PauseScreen, GameOverScreen
+from utils import cv2_frame_to_pygame_surface, resource_path
 
 ENEMY_SPAWN_INTERVAL = 1.4
 LEVEL_SCORE_STEP = 500
@@ -58,9 +58,9 @@ STATE_CONTROLS = "controls"
 STATE_HIGH_SCORES = "high_scores"
 STATE_SETTINGS = "settings"
 STATE_HANGAR = "hangar"
+STATE_ARMORY = "armory"
 STATE_PAUSED = "paused"
 STATE_GAME_OVER = "game_over"
-STATE_POWERUP_SELECT = "powerup_select"
 
 PREVIEW_WIDTH = 240
 PREVIEW_HEIGHT = 180
@@ -80,23 +80,33 @@ def main():
     pygame.init()
     pygame.display.set_caption(settings.GAME_TITLE)
 
-    progress_data = progress.load_progress()
-
+    # Real OS window: resizable so it has the minimize/maximize/close box,
+    # and can be dragged to any size or maximized with no black letterbox
+    # bars -- everything is still drawn at the fixed logical resolution
+    # below (`screen`), then stretched to fill whatever the window's
+    # actual current size is, right before flip().
+    window = pygame.display.set_mode(
+        (settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT),
+        pygame.RESIZABLE
+    )
     screen = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
-    is_fullscreen = progress_data.get("fullscreen", False)
-    if is_fullscreen:
-        display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    else:
-        display_surf = pygame.display.set_mode(
-            (settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.RESIZABLE
-        )
 
-    def get_scaled_rect(window_size, base_size=(settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT)):
-        win_w, win_h = window_size
-        base_w, base_h = base_size
-        scale = min(win_w / base_w, win_h / base_h)
-        new_w, new_h = int(base_w * scale), int(base_h * scale)
-        return pygame.Rect((win_w - new_w) // 2, (win_h - new_h) // 2, new_w, new_h), scale
+    def get_scaled_mouse_pos():
+        win_w, win_h = window.get_size()
+        real_x, real_y = pygame.mouse.get_pos()
+        scale_x = settings.SCREEN_WIDTH / win_w
+        scale_y = settings.SCREEN_HEIGHT / win_h
+        return (real_x * scale_x, real_y * scale_y)
+
+    # UPGRADE: use the real game logo as the window/taskbar icon. (For the
+    # built .exe itself, use game_icon.ico with PyInstaller's --icon flag --
+    # see README_ICON.md.)
+    try:
+        icon_path = resource_path(os.path.join(settings.UI_ASSET_DIR, "logo.png"))
+        if os.path.isfile(icon_path):
+            pygame.display.set_icon(pygame.image.load(icon_path))
+    except Exception as e:
+        print(f"[main] could not set window icon: {e}")
 
     clock = pygame.time.Clock()
     debug_font = pygame.font.SysFont("consolas", 20)
@@ -105,18 +115,19 @@ def main():
 
     starfield = Starfield()
     main_menu = MainMenu()
-    player = Player(progress_data["selected_ship"])
+    progress_data = progress.load_progress()
+    player = Player(progress_data["selected_ship"], progress_data)
     controls_screen = ControlsScreen()
     high_scores_screen = HighScoresScreen()
     settings_screen = SettingsScreen()
     hangar_screen = HangarScreen()
+    armory_screen = ArmoryScreen()
     pause_screen = PauseScreen()
-    powerup_screen = PowerupScreen()
     game_over_screen = GameOverScreen()
     hud = HUD()
     audio_manager = AudioManager()
-    audio_manager.set_volume(progress_data.get("master_volume", settings.DEFAULT_MUSIC_VOLUME))
     impact_particles = particles.ParticleSystem()
+    world_surf = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
     high_scores_data = highscore.load_high_scores()
     settings_return_state = STATE_MENU
     game_over_stats = {}
@@ -124,19 +135,33 @@ def main():
     camera = CameraManager()
     camera.start()
     hand_tracker = HandTracker(max_num_hands=2)
-    gesture_recognizer = GestureRecognizer(
-        pinch_threshold=progress_data.get("gesture_sensitivity", 0.45)
-    )
+    gesture_recognizer = GestureRecognizer()
     swipe_detector = SwipeDetector()
 
     def make_new_run():
-        fresh_player = Player(progress_data["selected_ship"])
+        fresh_player = Player(progress_data["selected_ship"], progress_data)
         return fresh_player, [], [], [], [], ENEMY_SPAWN_INTERVAL, 0, 1, 0.0, None, [], 0, 0.0, [], []
 
     state = STATE_MENU
     running = True
     debug_mode = True  # press F3 to toggle -- shows crosshair + coordinate readout
     camera_preview_visible = True  # toggle in Settings -- hides the webcam feed box
+
+    # --- POLISH: reused fonts instead of re-creating one per popup per
+    # frame (was a real per-frame allocation before). ---
+    popup_font = pygame.font.SysFont("consolas", 20, bold=True)
+    banner_font = pygame.font.SysFont("consolas", 48, bold=True)
+    intro_font = pygame.font.SysFont("consolas", 44, bold=True)
+
+    # --- POLISH: a quick, uniform darken/reveal transition plays over
+    # ANY screen change (menu <-> play <-> pause <-> armory <-> etc) so
+    # switching screens reads as an intentional cut instead of an
+    # instant, jarring swap. Purely a draw-time overlay -- doesn't touch
+    # any of the existing state-change logic below. ---
+    TRANSITION_DURATION = 0.22
+    previous_state = state
+    transition_timer = TRANSITION_DURATION  # fade in once on launch too
+
     bullets = []
     enemies = []
     hazards = []
@@ -155,17 +180,26 @@ def main():
     coins = []
     credit_popups = []  # floating "+N" feedback text when a coin is collected
 
-    # --- Game-feel: hit-stop + screen shake, both purely cosmetic ---
-    hitstop_timer = 0.0
-    world_shake_timer = 0.0
-    world_shake_magnitude = 0.0
-    was_boosting = False
-    world_surf = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
-
     # --- Screen flash feedback (Step 10) ---
     screen_flash_timer = 0.0
     screen_flash_start = 0.0
     screen_flash_color = settings.DANGER_RED
+
+    # --- Hit-stop + screen shake (impact "juice") ---
+    hitstop_timer = 0.0          # while > 0, gameplay updates in slow motion
+    world_shake_timer = 0.0      # while > 0, the world layer jitters
+    world_shake_start = 0.0
+    world_shake_magnitude = 0.0
+    was_boosting = False         # edge-detects boost engage for a trail burst
+
+    # --- UPGRADE: kill combo multiplier ---
+    # Chaining enemy kills within COMBO_WINDOW seconds of each other builds
+    # a stacking score multiplier (capped at +100%). Missing that window
+    # resets the streak -- rewards aggressive, continuous play instead of
+    # picking off enemies one at a time at leisure.
+    COMBO_WINDOW = 1.2
+    combo_count = 0
+    combo_timer = 0.0
 
     # Remembers where the flying hand's fingertip was last seen (normalized
     # 0.0-1.0 coords). Used to keep tracking the SAME hand across frames
@@ -182,13 +216,18 @@ def main():
 
     while running:
         dt = clock.tick(settings.FPS) / 1000.0
-        raw_mouse = pygame.mouse.get_pos()
-        scaled_rect, _scale = get_scaled_rect(display_surf.get_size())
-        mouse_pos = (
-            (raw_mouse[0] - scaled_rect.x) / _scale,
-            (raw_mouse[1] - scaled_rect.y) / _scale,
-        )
+        dt = min(dt, 0.05)  # PERF: cap so a hitch never causes a slow-motion catch-up spiral
+        mouse_pos = get_scaled_mouse_pos()
         screen_flash_timer = max(0.0, screen_flash_timer - dt)
+        hitstop_timer = max(0.0, hitstop_timer - dt)
+        world_shake_timer = max(0.0, world_shake_timer - dt)
+        combo_timer = max(0.0, combo_timer - dt)
+        if combo_timer <= 0.0:
+            combo_count = 0
+        # While hit-stop is active, gameplay updates in heavy slow-motion
+        # instead of fully freezing -- reads as a punchy "impact beat"
+        # rather than the game just stuttering.
+        effective_dt = dt * 0.05 if hitstop_timer > 0 else dt
         hud.update(dt)
 
         # =====================================================================
@@ -198,8 +237,8 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
-            elif event.type == pygame.WINDOWFOCUSLOST and state == STATE_PLAYING:
-                state = STATE_PAUSED
+            elif event.type == pygame.VIDEORESIZE:
+                window = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -209,10 +248,8 @@ def main():
                         state = STATE_PLAYING
                     elif state == STATE_SETTINGS:
                         state = settings_return_state
-                    elif state in (STATE_CONTROLS, STATE_HIGH_SCORES, STATE_HANGAR, STATE_GAME_OVER):
+                    elif state in (STATE_CONTROLS, STATE_HIGH_SCORES, STATE_HANGAR, STATE_ARMORY, STATE_GAME_OVER):
                         state = STATE_MENU
-                    elif state == STATE_POWERUP_SELECT:
-                        pass  # force a deliberate click -- don't let ESC skip or quit here
                     else:
                         running = False
                 elif event.key == pygame.K_p:
@@ -222,16 +259,6 @@ def main():
                         state = STATE_PLAYING
                 elif event.key == pygame.K_F3:
                     debug_mode = not debug_mode
-                elif event.key == pygame.K_F11:
-                    is_fullscreen = not is_fullscreen
-                    if is_fullscreen:
-                        display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-                    else:
-                        display_surf = pygame.display.set_mode(
-                            (settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.RESIZABLE
-                        )
-                    progress_data["fullscreen"] = is_fullscreen
-                    progress.save_progress(progress_data)
                 elif state == STATE_PLAYING and event.key in WEAPON_KEYS:
                     player.set_weapon(WEAPON_KEYS[event.key])
 
@@ -241,9 +268,11 @@ def main():
                     if action == "play":
                         state = STATE_PLAYING
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
-                        hitstop_timer = 0.0
-                        world_shake_timer = 0.0
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
                         was_boosting = False
+                        combo_count = 0
+                        combo_timer = 0.0
                     elif action == "exit":
                         running = False
                     elif action == "controls":
@@ -256,6 +285,8 @@ def main():
                         state = STATE_SETTINGS
                     elif action == "hangar":
                         state = STATE_HANGAR
+                    elif action == "armory":
+                        state = STATE_ARMORY
                 elif state == STATE_CONTROLS:
                     if controls_screen.handle_click(mouse_pos) == "back":
                         state = STATE_MENU
@@ -268,16 +299,12 @@ def main():
                     )
                     if action == "back":
                         state = settings_return_state
-                    elif action == "toggle_fullscreen":
-                        is_fullscreen = progress_data.get("fullscreen", False)
-                        if is_fullscreen:
-                            display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-                        else:
-                            display_surf = pygame.display.set_mode(
-                                (settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.RESIZABLE
-                            )
                 elif state == STATE_HANGAR:
                     action, progress_data = hangar_screen.handle_click(mouse_pos, progress_data)
+                    if action == "back":
+                        state = STATE_MENU
+                elif state == STATE_ARMORY:
+                    action, progress_data = armory_screen.handle_click(mouse_pos, progress_data)
                     if action == "back":
                         state = STATE_MENU
                 elif state == STATE_PAUSED:
@@ -286,9 +313,11 @@ def main():
                         state = STATE_PLAYING
                     elif action == "restart":
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
-                        hitstop_timer = 0.0
-                        world_shake_timer = 0.0
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
                         was_boosting = False
+                        combo_count = 0
+                        combo_timer = 0.0
                         state = STATE_PLAYING
                     elif action == "settings":
                         settings_return_state = STATE_PAUSED
@@ -299,36 +328,26 @@ def main():
                     action = game_over_screen.handle_click(mouse_pos)
                     if action == "restart":
                         player, bullets, enemies, hazards, explosions, enemy_spawn_timer, score, level, level_up_timer, boss, boss_bullets, boss_spawn_index, boss_intro_timer, coins, credit_popups = make_new_run()
-                        hitstop_timer = 0.0
-                        world_shake_timer = 0.0
+                        impact_particles.clear()
+                        hitstop_timer = world_shake_timer = world_shake_start = world_shake_magnitude = 0.0
                         was_boosting = False
+                        combo_count = 0
+                        combo_timer = 0.0
                         state = STATE_PLAYING
                     elif action == "main_menu":
                         state = STATE_MENU
 
-                elif state == STATE_POWERUP_SELECT:
-                    chosen_powerup = powerup_screen.handle_click(mouse_pos)
-                    if chosen_powerup is not None:
-                        powerups.apply_powerup(player, chosen_powerup)
-                        audio_manager.play_sfx("powerup_select")
-                        state = STATE_PLAYING
-
             if state == STATE_SETTINGS:
-                settings_screen.handle_event(event, audio_manager, progress_data)
-                gesture_recognizer.set_sensitivity(progress_data.get("gesture_sensitivity", 0.45))
+                settings_screen.handle_event(event, audio_manager)
             elif state == STATE_PAUSED:
                 pause_screen.handle_event(event, audio_manager)
 
-            if state in (STATE_SETTINGS, STATE_PAUSED) and event.type in (
-                pygame.MOUSEBUTTONUP, pygame.MOUSEBUTTONDOWN
-            ):
-                changed = progress_data.get("master_volume") != audio_manager.volume
-                if changed:
-                    progress_data["master_volume"] = audio_manager.volume
-                if event.type == pygame.MOUSEBUTTONUP and state == STATE_SETTINGS:
-                    progress.save_progress(progress_data)
-                elif changed:
-                    progress.save_progress(progress_data)
+        # --- POLISH: any screen change this frame kicks off the fade
+        # overlay drawn at the very end of the frame (see step 3 below). ---
+        if state != previous_state:
+            transition_timer = TRANSITION_DURATION
+            previous_state = state
+        transition_timer = max(0.0, transition_timer - dt)
 
         # =====================================================================
         # 2. UPDATE -- figure out what's happening this frame
@@ -345,15 +364,18 @@ def main():
             settings_screen.update(dt, mouse_pos)
         elif state == STATE_HANGAR:
             hangar_screen.update(dt, mouse_pos)
+        elif state == STATE_ARMORY:
+            armory_screen.update(dt, mouse_pos)
         elif state == STATE_PAUSED:
             pause_screen.update(dt, mouse_pos)
         elif state == STATE_GAME_OVER:
             game_over_screen.update(dt, mouse_pos)
-        elif state == STATE_POWERUP_SELECT:
-            powerup_screen.update(dt, mouse_pos)
 
         if state == STATE_PLAYING:
-            audio_manager.play_action_music()
+            if boss is not None:
+                audio_manager.play_boss_music()
+            else:
+                audio_manager.play_level_music(level)
         else:
             audio_manager.play_menu_music()
 
@@ -401,13 +423,6 @@ def main():
             diff_key = progress_data.get("difficulty", "normal")
             diff_cfg = settings.DIFFICULTY_LEVELS.get(diff_key, settings.DIFFICULTY_LEVELS["normal"])
 
-            # --- Hit-stop: a brief slow-motion "punch" on big moments
-            # (player hit, boss phase change, boss defeated). Camera/hand
-            # tracking above already ran at real dt so input stays
-            # responsive; only the game-world entities below feel it. ---
-            hitstop_timer = max(0.0, hitstop_timer - dt)
-            effective_dt = dt * 0.06 if hitstop_timer > 0 else dt
-
             if index_fingertip_norm is not None:
                 target_x = index_fingertip_norm[0] * settings.SCREEN_WIDTH
                 target_y = index_fingertip_norm[1] * settings.SCREEN_HEIGHT
@@ -429,8 +444,10 @@ def main():
             boost_requested = (current_gesture == "open_palm") or keys_held[pygame.K_LSHIFT] or keys_held[pygame.K_RSHIFT]
             player.update(effective_dt, target_x, target_y, kb_dx, kb_dy, boost_requested)
 
-            if player.boosting and not was_boosting:
-                audio_manager.play_sfx("boost_engage")
+            # Boost-engage trail burst -- fires once on the edge (boost just
+            # started) plus a steady trickle every frame while held.
+            if player.boosting:
+                impact_particles.spawn_boost_trail(player.x, player.y + player.height * 0.5)
             was_boosting = player.boosting
 
             # --- Shooting: pinch gesture OR Space, gated by cooldown ---
@@ -441,13 +458,12 @@ def main():
                     b.damage = max(1, round(b.damage * player.damage_mult))
                 bullets.extend(new_bullets)
                 player.trigger_shot()
-                heavy_weapons = ("spread", "plasma")
-                audio_manager.play_sfx("shoot_heavy" if player.weapon_name in heavy_weapons else "shoot_light")
+                audio_manager.play_weapon_sound(player.weapon_name)
+                impact_particles.spawn_muzzle_burst(nose_x, nose_y, weapons.get_color(player.weapon_name))
 
             # --- Shield: fist gesture ---
             if current_gesture == "fist" and player.can_activate_shield():
                 player.activate_shield()
-                audio_manager.play_sfx("shield_activate")
 
             # --- Weapon switch: fast horizontal swipe ---
             swipe_x = index_fingertip_norm[0] if index_fingertip_norm is not None else None
@@ -524,14 +540,14 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
-                        audio_manager.play_sfx("player_hit")
-                        hitstop_timer = max(hitstop_timer, 0.06)
-                        world_shake_timer = max(world_shake_timer, 0.18)
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
                         world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
-                        audio_manager.play_sfx("shield_block")
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             hazards = [h for h in hazards if h.alive]
 
             # --- Boss update + bullets ---
@@ -539,9 +555,8 @@ def main():
                 fired = boss.update(effective_dt, player.x, player.y)
                 boss_bullets.extend(fired)
                 if boss.phase_changed_this_frame:
-                    audio_manager.play_sfx("boss_phase")
-                    hitstop_timer = max(hitstop_timer, 0.1)
-                    world_shake_timer = max(world_shake_timer, 0.25)
+                    hitstop_timer = 0.10
+                    world_shake_timer = world_shake_start = 0.4
                     world_shake_magnitude = 8
 
             for bb in boss_bullets:
@@ -563,14 +578,14 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
-                        audio_manager.play_sfx("player_hit")
-                        hitstop_timer = max(hitstop_timer, 0.06)
-                        world_shake_timer = max(world_shake_timer, 0.18)
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
                         world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
-                        audio_manager.play_sfx("shield_block")
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             boss_bullets = [b for b in boss_bullets if b.alive]
 
             for enemy in enemies:
@@ -586,10 +601,14 @@ def main():
                         bullet.alive = False
                         impact_particles.spawn_hit_spark(bullet.x, bullet.y, color=enemy.color)
                         if not enemy.alive:
-                            score += int(enemy.score_value * diff_cfg["score_mult"])
+                            combo_count += 1
+                            combo_timer = COMBO_WINDOW
+                            combo_mult = 1.0 + min(combo_count, 20) * 0.05
+                            score += int(enemy.score_value * diff_cfg["score_mult"] * combo_mult)
                             explosions.append(Explosion(enemy.x, enemy.y, color=enemy.color))
-                            audio_manager.play_sfx("explosion")
-                            coins.extend(pickups.maybe_drop_coin(enemy.x, enemy.y))
+                            dropped_coins = pickups.maybe_drop_coin(enemy.x, enemy.y)
+                            if dropped_coins:
+                                coins.extend(dropped_coins)
                         break
             bullets = [b for b in bullets if b.alive]
 
@@ -604,16 +623,13 @@ def main():
                 if not boss.alive:
                     score += int(boss.score_value * diff_cfg["score_mult"])
                     explosions.append(Explosion(boss.x, boss.y, color=boss.core_color, big=True))
-                    audio_manager.play_sfx("boss_victory")
-                    hitstop_timer = max(hitstop_timer, 0.15)
-                    world_shake_timer = max(world_shake_timer, 0.35)
-                    world_shake_magnitude = 10
                     coins.extend(pickups.spawn_boss_coin_burst(boss.x, boss.y))
                     boss_bullets.clear()
                     boss = None
                     player.trigger_victory_effect()
-                    powerup_screen.set_choices(random.sample(powerups.POWERUP_ORDER, k=min(3, len(powerups.POWERUP_ORDER))))
-                    state = STATE_POWERUP_SELECT
+                    hitstop_timer = 0.15
+                    world_shake_timer = world_shake_start = 0.5
+                    world_shake_magnitude = 10
 
             for enemy in enemies:
                 if enemy.get_rect().colliderect(player.get_rect()) and player.invincible_timer <= 0:
@@ -632,14 +648,14 @@ def main():
                     if hit_registered:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_HIT_DURATION
                         screen_flash_color = settings.DANGER_RED
-                        audio_manager.play_sfx("player_hit")
-                        hitstop_timer = max(hitstop_timer, 0.06)
-                        world_shake_timer = max(world_shake_timer, 0.18)
+                        hitstop_timer = 0.06
+                        world_shake_timer = world_shake_start = 0.25
                         world_shake_magnitude = 6
                     elif was_shielded:
                         screen_flash_timer = screen_flash_start = SCREEN_FLASH_BLOCK_DURATION
                         screen_flash_color = settings.NEON_BLUE
-                        audio_manager.play_sfx("shield_block")
+                        world_shake_timer = world_shake_start = 0.12
+                        world_shake_magnitude = 3
             enemies = [e for e in enemies if e.alive]
 
             for explosion in explosions:
@@ -647,7 +663,6 @@ def main():
             explosions = [e for e in explosions if e.alive]
 
             impact_particles.update(effective_dt)
-            world_shake_timer = max(0.0, world_shake_timer - dt)
 
             # --- Coin pickups: the actual "earn credits during the run"
             # loop, on top of the flat end-of-run score bonus below. ---
@@ -658,7 +673,6 @@ def main():
                     coin.alive = False
                     progress_data["credits"] += coin.value
                     progress.save_progress(progress_data)
-                    audio_manager.play_sfx("coin")
                     credit_popups.append({"x": coin.x, "y": coin.y, "text": f"+{coin.value}", "age": 0.0})
             coins = [c for c in coins if c.alive]
 
@@ -676,11 +690,27 @@ def main():
         # =====================================================================
         # 3. DRAW
         # =====================================================================
-        if state in (STATE_PLAYING, STATE_PAUSED, STATE_POWERUP_SELECT):
-            # The "world" (background + everything that can get hit) draws
-            # onto its own surface first so a hit-stop/boss-phase/boss-kill
-            # moment can shake just the world, not the HUD text on top of it.
-            starfield.draw(world_surf)
+        starfield.draw(screen)
+
+        if state == STATE_MENU:
+            main_menu.draw(screen)
+        elif state == STATE_CONTROLS:
+            controls_screen.draw(screen)
+        elif state == STATE_HIGH_SCORES:
+            high_scores_screen.draw(screen, high_scores_data)
+        elif state == STATE_SETTINGS:
+            settings_screen.draw(screen, audio_manager, progress_data, debug_mode, camera_preview_visible)
+        elif state == STATE_HANGAR:
+            hangar_screen.draw(screen, progress_data)
+        elif state == STATE_ARMORY:
+            armory_screen.draw(screen, progress_data)
+        elif state in (STATE_PLAYING, STATE_PAUSED):
+            # World layer (everything that should shake on impact) is drawn
+            # onto its own transparent surface first, then blitted onto the
+            # screen with a small random offset while shake is active. HUD,
+            # popups, banners, and overlays are drawn straight to `screen`
+            # afterward so they stay crisp/readable even mid-shake.
+            world_surf.fill((0, 0, 0, 0))
             for enemy in enemies:
                 enemy.draw(world_surf)
             for hazard in hazards:
@@ -704,21 +734,19 @@ def main():
             hint_rect = hint_surf.get_rect(midtop=(settings.SCREEN_WIDTH // 2, 12))
             world_surf.blit(hint_surf, hint_rect)
 
-            if world_shake_timer > 0 and world_shake_magnitude > 0:
-                shake_amt = world_shake_magnitude * min(1.0, world_shake_timer / 0.08)
-                shake_dx = random.uniform(-shake_amt, shake_amt)
-                shake_dy = random.uniform(-shake_amt, shake_amt)
-            else:
-                shake_dx = shake_dy = 0.0
-            screen.blit(world_surf, (shake_dx, shake_dy))
+            shake_x, shake_y = 0, 0
+            if world_shake_timer > 0 and world_shake_start > 0:
+                intensity = world_shake_magnitude * (world_shake_timer / world_shake_start)
+                shake_x = random.uniform(-intensity, intensity)
+                shake_y = random.uniform(-intensity, intensity)
+            screen.blit(world_surf, (shake_x, shake_y))
 
-            hud.draw(screen, player, score, level, progress_data["credits"])
+            hud.draw(screen, player, score, level, progress_data["credits"], combo_count=combo_count)
 
             for popup in credit_popups:
                 progress_frac = popup["age"] / 1.0
                 rise = progress_frac * 34
                 alpha = max(0, int(255 * (1 - progress_frac)))
-                popup_font = pygame.font.SysFont("consolas", 20, bold=True)
                 popup_surf = popup_font.render(popup["text"], True, settings.GOLD)
                 popup_surf.set_alpha(alpha)
                 screen.blit(popup_surf, popup_surf.get_rect(
@@ -726,7 +754,6 @@ def main():
                 ))
 
             if level_up_timer > 0:
-                banner_font = pygame.font.SysFont("consolas", 48, bold=True)
                 alpha = min(255, int(255 * (level_up_timer / 0.5))) if level_up_timer < 0.5 else 255
                 banner_surf = banner_font.render(f"LEVEL {level}!", True, settings.GOLD)
                 banner_surf.set_alpha(alpha)
@@ -737,7 +764,6 @@ def main():
                 boss.draw_health_bar(screen, debug_font)
 
             if boss_intro_timer > 0:
-                intro_font = pygame.font.SysFont("consolas", 44, bold=True)
                 alpha = min(255, int(255 * (boss_intro_timer / 0.6))) if boss_intro_timer < 0.6 else 255
                 intro_label = boss.label if boss is not None else "BOSS"
                 intro_surf = intro_font.render(f"BOSS BATTLE -- {intro_label}", True, settings.GOLD)
@@ -764,24 +790,8 @@ def main():
             if state == STATE_PAUSED:
                 pause_screen.draw(screen, audio_manager, progress_data)
 
-            if state == STATE_POWERUP_SELECT:
-                powerup_screen.draw(screen)
-
-        else:
-            starfield.draw(screen)
-
-            if state == STATE_MENU:
-                main_menu.draw(screen)
-            elif state == STATE_CONTROLS:
-                controls_screen.draw(screen)
-            elif state == STATE_HIGH_SCORES:
-                high_scores_screen.draw(screen, high_scores_data)
-            elif state == STATE_SETTINGS:
-                settings_screen.draw(screen, audio_manager, progress_data, debug_mode, camera_preview_visible)
-            elif state == STATE_HANGAR:
-                hangar_screen.draw(screen, progress_data)
-            elif state == STATE_GAME_OVER:
-                game_over_screen.draw(screen, game_over_stats)
+        elif state == STATE_GAME_OVER:
+            game_over_screen.draw(screen, game_over_stats)
 
         # --- Camera preview box (toggle in Settings) ---
         if camera_preview_visible:
@@ -845,10 +855,22 @@ def main():
             flash_alpha = 150 * (screen_flash_timer / screen_flash_start)
             draw_screen_flash(screen, flash_alpha, screen_flash_color)
 
-        display_surf.fill((0, 0, 0))
-        _scaled_rect, _ = get_scaled_rect(display_surf.get_size())
-        _scaled_surf = pygame.transform.smoothscale(screen, _scaled_rect.size)
-        display_surf.blit(_scaled_surf, _scaled_rect.topleft)
+        # --- POLISH: uniform fade overlay for screen transitions ---
+        if transition_timer > 0:
+            fade_alpha = int(255 * (transition_timer / TRANSITION_DURATION))
+            fade_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            fade_surf.fill((0, 0, 0, fade_alpha))
+            screen.blit(fade_surf, (0, 0))
+
+        # Stretch the fixed logical-resolution surface to fill whatever
+        # size the real window currently is -- fills the whole window on
+        # maximize/resize with no black bars (aspect ratio is not
+        # preserved, matching the "no black parts" requirement).
+        win_size = window.get_size()
+        if win_size == (settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT):
+            window.blit(screen, (0, 0))
+        else:
+            pygame.transform.scale(screen, win_size, window)
         pygame.display.flip()
 
     # =========================================================================
@@ -861,16 +883,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        import traceback
-        import datetime
-        try:
-            with open(settings.LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(f"\n--- Crash at {datetime.datetime.now().isoformat()} ---\n")
-                f.write(traceback.format_exc())
-            print(f"[FATAL] Game crashed. Details written to {settings.LOG_PATH}")
-        except Exception:
-            traceback.print_exc()
-        raise
+    main()

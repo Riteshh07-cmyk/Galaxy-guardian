@@ -6,7 +6,7 @@ import pygame
 import settings
 import ships
 import progress
-import powerups
+import upgrades
 from menu import Button
 
 
@@ -88,18 +88,11 @@ class SettingsScreen(BackScreenBase):
         self.mute_button = Button("MUTE", (self.slider_rect.right + 110, self.slider_rect.centery),
                                    "mute", width=110, height=36)
 
-        # --- Gesture sensitivity slider -- controls how close thumb+index
-        # need to be to register as a pinch. Lower = tighter/more precise
-        # pinch required; higher = more forgiving, easier to trigger. ---
-        self.sens_slider_rect = pygame.Rect(settings.SCREEN_WIDTH // 2 - 150, 280, 300, 10)
-        self.sens_dragging = False
-        self.sens_min, self.sens_max = 0.15, 0.70
-
         # --- Difficulty selector -- picks from settings.DIFFICULTY_LEVELS,
         # which was already defined but never actually wired up anywhere. ---
         self.difficulty_buttons = []
         cx = settings.SCREEN_WIDTH // 2
-        self.diff_y = 400
+        self.diff_y = 360
         gap = 190
         count = len(settings.DIFFICULTY_ORDER)
         start_x = cx - gap * (count - 1) / 2
@@ -109,21 +102,15 @@ class SettingsScreen(BackScreenBase):
             self.difficulty_buttons.append(btn)
 
         # --- Extra toggles ---
-        toggle_y = 540
+        toggle_y = 480
         self.debug_toggle_button = Button("DEBUG OVERLAY", (cx - 160, toggle_y), "toggle_debug", width=260, height=44)
         self.camera_toggle_button = Button("CAMERA PREVIEW", (cx + 160, toggle_y), "toggle_camera", width=260, height=44)
-        self.fullscreen_toggle_button = Button("DISPLAY MODE", (cx, toggle_y + 56), "toggle_fullscreen", width=260, height=44)
 
     def _knob_rect(self, volume):
         x = self.slider_rect.x + int(volume * self.slider_rect.width)
         return pygame.Rect(x - 8, self.slider_rect.y - 6, 16, 22)
 
-    def _sens_knob_rect(self, sensitivity):
-        frac = (sensitivity - self.sens_min) / (self.sens_max - self.sens_min)
-        x = self.sens_slider_rect.x + int(frac * self.sens_slider_rect.width)
-        return pygame.Rect(x - 8, self.sens_slider_rect.y - 6, 16, 22)
-
-    def handle_event(self, event, audio_manager, progress_data):
+    def handle_event(self, event, audio_manager):
         if event.type == pygame.MOUSEBUTTONDOWN:
             if (self.slider_rect.collidepoint(event.pos) or
                     self._knob_rect(audio_manager.volume).collidepoint(event.pos)):
@@ -134,19 +121,11 @@ class SettingsScreen(BackScreenBase):
                     audio_manager.set_volume(0.0)
                 else:
                     audio_manager.set_volume(self._pre_mute_volume or 0.6)
-            elif (self.sens_slider_rect.collidepoint(event.pos) or
-                    self._sens_knob_rect(progress_data.get("gesture_sensitivity", 0.45)).collidepoint(event.pos)):
-                self.sens_dragging = True
         elif event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
-            self.sens_dragging = False
         elif event.type == pygame.MOUSEMOTION and self.dragging:
             rel = (event.pos[0] - self.slider_rect.x) / self.slider_rect.width
             audio_manager.set_volume(rel)
-        elif event.type == pygame.MOUSEMOTION and self.sens_dragging:
-            rel = (event.pos[0] - self.sens_slider_rect.x) / self.sens_slider_rect.width
-            rel = max(0.0, min(1.0, rel))
-            progress_data["gesture_sensitivity"] = self.sens_min + rel * (self.sens_max - self.sens_min)
 
     def update(self, dt, mouse_pos):
         super().update(dt, mouse_pos)
@@ -155,7 +134,6 @@ class SettingsScreen(BackScreenBase):
             btn.update(dt, mouse_pos)
         self.debug_toggle_button.update(dt, mouse_pos)
         self.camera_toggle_button.update(dt, mouse_pos)
-        self.fullscreen_toggle_button.update(dt, mouse_pos)
 
     def handle_click(self, mouse_pos, progress_data, debug_mode, camera_preview_visible):
         if self.back_button.rect.collidepoint(mouse_pos):
@@ -171,10 +149,6 @@ class SettingsScreen(BackScreenBase):
         if self.camera_toggle_button.rect.collidepoint(mouse_pos):
             camera_preview_visible = not camera_preview_visible
             return None, progress_data, debug_mode, camera_preview_visible
-        if self.fullscreen_toggle_button.rect.collidepoint(mouse_pos):
-            progress_data["fullscreen"] = not progress_data.get("fullscreen", False)
-            progress.save_progress(progress_data)
-            return "toggle_fullscreen", progress_data, debug_mode, camera_preview_visible
         return None, progress_data, debug_mode, camera_preview_visible
 
     def draw(self, surface, audio_manager, progress_data, debug_mode, camera_preview_visible):
@@ -198,26 +172,8 @@ class SettingsScreen(BackScreenBase):
         self.mute_button.label = "UNMUTE" if audio_manager.volume <= 0 else "MUTE"
         self.mute_button.draw(surface)
 
-        # --- Gesture sensitivity slider ---
-        sens_val = progress_data.get("gesture_sensitivity", 0.45)
-        sens_label = self.body_font.render("PINCH SENSITIVITY", True, settings.WHITE)
-        surface.blit(sens_label, (self.sens_slider_rect.x, self.sens_slider_rect.y - 34))
-
-        pygame.draw.rect(surface, (60, 60, 60), self.sens_slider_rect, border_radius=4)
-        sens_frac = (sens_val - self.sens_min) / (self.sens_max - self.sens_min)
-        sens_fill_rect = pygame.Rect(
-            self.sens_slider_rect.x, self.sens_slider_rect.y,
-            int(self.sens_slider_rect.width * sens_frac), self.sens_slider_rect.height
-        )
-        pygame.draw.rect(surface, settings.NEON_PURPLE, sens_fill_rect, border_radius=4)
-        pygame.draw.rect(surface, settings.WHITE, self._sens_knob_rect(sens_val), border_radius=4)
-
-        sens_desc = "TIGHT (precise)" if sens_frac < 0.35 else "LOOSE (forgiving)" if sens_frac > 0.65 else "BALANCED"
-        sens_s = self.body_font.render(sens_desc, True, settings.NEON_PURPLE)
-        surface.blit(sens_s, (self.sens_slider_rect.right + 20, self.sens_slider_rect.y - 6))
-
         diff_label = self.body_font.render("DIFFICULTY", True, settings.WHITE)
-        surface.blit(diff_label, (settings.SCREEN_WIDTH // 2 - diff_label.get_width() // 2, 340))
+        surface.blit(diff_label, (settings.SCREEN_WIDTH // 2 - diff_label.get_width() // 2, 300))
 
         current_diff = progress_data.get("difficulty", "normal")
         for btn in self.difficulty_buttons:
@@ -233,17 +189,13 @@ class SettingsScreen(BackScreenBase):
         hint_y = self.difficulty_buttons[0].rect.bottom + 26 if self.difficulty_buttons else self.diff_y + 60
         surface.blit(hint_s, hint_s.get_rect(center=(settings.SCREEN_WIDTH // 2, hint_y)))
 
-        is_fullscreen = progress_data.get("fullscreen", False)
         self.debug_toggle_button.label = f"DEBUG OVERLAY: {'ON' if debug_mode else 'OFF'}"
         self.camera_toggle_button.label = f"CAMERA PREVIEW: {'ON' if camera_preview_visible else 'OFF'}"
-        self.fullscreen_toggle_button.label = f"DISPLAY MODE: {'FULLSCREEN' if is_fullscreen else 'WINDOWED'}"
         self.debug_toggle_button.draw(surface)
         self.camera_toggle_button.draw(surface)
-        self.fullscreen_toggle_button.draw(surface)
         for btn, on in (
             (self.debug_toggle_button, debug_mode),
             (self.camera_toggle_button, camera_preview_visible),
-            (self.fullscreen_toggle_button, is_fullscreen),
         ):
             border = settings.NEON_GREEN if on else (90, 90, 90)
             pygame.draw.rect(surface, border, btn.rect, width=2, border_radius=12)
@@ -325,6 +277,84 @@ class HangarScreen(BackScreenBase):
                 status, color = f"LOCKED - {cfg['cost']} CR", settings.DANGER_RED
             status_s = self.status_font.render(status, True, color)
             surface.blit(status_s, (rect.x + 14, rect.bottom - 28))
+
+
+class ArmoryScreen(BackScreenBase):
+    """UPGRADE: permanent, credit-purchased ship upgrades. Sits alongside
+    the Hangar (which sells whole ships) -- this sells incremental stat
+    boosts instead, so grinding runs has somewhere to put a big credit
+    balance beyond just unlocking every ship once."""
+
+    def __init__(self):
+        super().__init__("ARMORY")
+        self.small_font = pygame.font.SysFont("consolas", 14)
+        self.status_font = pygame.font.SysFont("consolas", 14, bold=True)
+        self.card_rects = {}
+        cols = 2
+        card_w, card_h = 340, 190
+        gap_x, gap_y = 30, 26
+        start_x = settings.SCREEN_WIDTH // 2 - (cols * card_w + (cols - 1) * gap_x) // 2
+        start_y = 160
+        for i, upgrade_id in enumerate(upgrades.UPGRADE_ORDER):
+            col = i % cols
+            row = i // cols
+            x = start_x + col * (card_w + gap_x)
+            y = start_y + row * (card_h + gap_y)
+            self.card_rects[upgrade_id] = pygame.Rect(x, y, card_w, card_h)
+
+    def handle_click(self, mouse_pos, progress_data):
+        if self.back_button.rect.collidepoint(mouse_pos):
+            return "back", progress_data
+        for upgrade_id, rect in self.card_rects.items():
+            if rect.collidepoint(mouse_pos):
+                progress_data, bought = upgrades.buy_upgrade(progress_data, upgrade_id)
+                if bought:
+                    progress.save_progress(progress_data)
+                return None, progress_data
+        return None, progress_data
+
+    def draw(self, surface, progress_data):
+        self.draw_frame(surface)
+        credit_s = self.body_font.render(f"CREDITS: {progress_data['credits']:,}", True, settings.GOLD)
+        surface.blit(credit_s, (settings.SCREEN_WIDTH - 320, 34))
+
+        for upgrade_id, rect in self.card_rects.items():
+            cfg = upgrades.UPGRADE_DEFS[upgrade_id]
+            level = upgrades.get_level(progress_data, upgrade_id)
+            maxed = upgrades.is_maxed(progress_data, upgrade_id)
+
+            border_color = settings.NEON_GREEN if maxed else settings.NEON_BLUE
+            pygame.draw.rect(surface, (15, 15, 35), rect, border_radius=10)
+            pygame.draw.rect(surface, border_color, rect, width=3, border_radius=10)
+
+            name_s = self.body_font.render(cfg["label"], True, settings.WHITE)
+            surface.blit(name_s, (rect.x + 16, rect.y + 14))
+
+            desc_s = self.small_font.render(cfg["description"], True, (200, 200, 200))
+            surface.blit(desc_s, (rect.x + 16, rect.y + 44))
+
+            # Level pips -- filled squares for owned levels, empty for the rest
+            pip_size = 22
+            pip_gap = 8
+            for i in range(cfg["max_level"]):
+                px = rect.x + 16 + i * (pip_size + pip_gap)
+                py = rect.y + 78
+                pip_rect = pygame.Rect(px, py, pip_size, pip_size)
+                if i < level:
+                    pygame.draw.rect(surface, settings.NEON_GREEN, pip_rect, border_radius=4)
+                else:
+                    pygame.draw.rect(surface, (60, 60, 70), pip_rect, border_radius=4)
+                pygame.draw.rect(surface, (100, 100, 120), pip_rect, width=1, border_radius=4)
+
+            if maxed:
+                status, color = "MAX LEVEL", settings.NEON_GREEN
+            else:
+                cost = upgrades.cost_for_level(upgrade_id, level + 1)
+                affordable = progress_data["credits"] >= cost
+                status = f"LEVEL {level} -> {level + 1}   COST {cost:,} CR"
+                color = settings.NEON_BLUE if affordable else settings.DANGER_RED
+            status_s = self.status_font.render(status, True, color)
+            surface.blit(status_s, (rect.x + 16, rect.bottom - 34))
 
 
 class PauseScreen:
@@ -507,158 +537,6 @@ class PauseScreen:
 
         hint_s = self.hint_font.render("Press ESC to resume", True, (150, 160, 190))
         surface.blit(hint_s, hint_s.get_rect(center=(self.panel_rect.centerx, self.panel_rect.bottom - 22)))
-
-
-class PowerupScreen:
-    """Shown once, right after a boss dies. Presents 3 randomly-chosen
-    upgrade cards (drawn from powerups.POWERUP_ORDER, which repeats fine
-    since some effects stack) and applies whichever one gets clicked
-    directly onto the live Player instance. main.py owns freezing
-    gameplay while this is up -- this class only draws/reports clicks."""
-
-    def __init__(self):
-        self.title_font = pygame.font.SysFont("consolas", 34, bold=True)
-        self.label_font = pygame.font.SysFont("consolas", 21, bold=True)
-        self.desc_font = pygame.font.SysFont("consolas", 15)
-        self.hint_font = pygame.font.SysFont("consolas", 15)
-        self.time_elapsed = 0.0
-        self.choices = []
-
-        card_w, card_h = 260, 290
-        gap = 40
-        total_w = card_w * 3 + gap * 2
-        start_x = settings.SCREEN_WIDTH // 2 - total_w // 2
-        y = settings.SCREEN_HEIGHT // 2 - card_h // 2 + 40
-
-        self.card_rects = [
-            pygame.Rect(start_x + i * (card_w + gap), y, card_w, card_h)
-            for i in range(3)
-        ]
-        self.hover_amounts = [0.0, 0.0, 0.0]
-
-        random.seed(3)
-        self.particles = [
-            {
-                "x": random.uniform(0, settings.SCREEN_WIDTH),
-                "y": random.uniform(0, settings.SCREEN_HEIGHT),
-                "vy": random.uniform(-12, -4),
-                "phase": random.uniform(0, math.tau),
-                "size": random.uniform(1.0, 2.4),
-            }
-            for _ in range(30)
-        ]
-        random.seed()
-
-    def set_choices(self, choices):
-        """Call this once, right when the reward screen is opened."""
-        self.choices = choices
-        self.time_elapsed = 0.0  # restart the card entrance animation
-        self.hover_amounts = [0.0] * len(choices)
-
-    def update(self, dt, mouse_pos):
-        self.time_elapsed += dt
-        for i, rect in enumerate(self.card_rects):
-            if i >= len(self.hover_amounts):
-                break
-            hovered = rect.collidepoint(mouse_pos)
-            target = 1.0 if hovered else 0.0
-            self.hover_amounts[i] += (target - self.hover_amounts[i]) * min(1.0, 8.0 * dt)
-        for p in self.particles:
-            p["y"] += p["vy"] * dt
-            if p["y"] < -10:
-                p["y"] = settings.SCREEN_HEIGHT + 10
-                p["x"] = random.uniform(0, settings.SCREEN_WIDTH)
-
-    def handle_click(self, mouse_pos):
-        """Returns the chosen powerup_id, or None if the click missed."""
-        for i, rect in enumerate(self.card_rects):
-            if i < len(self.choices) and rect.collidepoint(mouse_pos):
-                return self.choices[i]
-        return None
-
-    def draw(self, surface):
-        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        overlay.fill((5, 5, 20, 205))
-        surface.blit(overlay, (0, 0))
-
-        for p in self.particles:
-            twinkle = 0.4 + 0.6 * abs(math.sin(self.time_elapsed * 2.5 + p["phase"]))
-            alpha = int(150 * twinkle)
-            pygame.draw.circle(surface, (*settings.WHITE, alpha), (int(p["x"]), int(p["y"])), p["size"])
-
-        title_bob = math.sin(self.time_elapsed * 1.6) * 4
-        title_surf = self.title_font.render("BOSS DEFEATED -- CHOOSE YOUR REWARD", True, settings.GOLD)
-        title_rect = title_surf.get_rect(center=(settings.SCREEN_WIDTH // 2, 150 + title_bob))
-        glow = pygame.Surface((title_rect.width + 30, title_rect.height + 16), pygame.SRCALPHA)
-        pygame.draw.rect(glow, (*settings.GOLD, 35), glow.get_rect(), border_radius=10)
-        surface.blit(glow, (title_rect.x - 15, title_rect.y - 8))
-        surface.blit(title_surf, title_rect)
-
-        for i, powerup_id in enumerate(self.choices):
-            if i >= len(self.card_rects) or powerup_id not in powerups.POWERUPS:
-                continue
-            rect = self.card_rects[i]
-            hover = self.hover_amounts[i] if i < len(self.hover_amounts) else 0.0
-            cfg = powerups.POWERUPS[powerup_id]
-
-            # Cards slide up + fade in, staggered by index -- so all 3
-            # don't just pop in simultaneously.
-            reveal_start = i * 0.12
-            eased = min(1.0, max(0.0, (self.time_elapsed - reveal_start) / 0.4))
-            eased = 1 - (1 - eased) ** 3
-            y_offset = int((1 - eased) * 40)
-            alpha = int(255 * eased)
-            if alpha <= 0:
-                continue
-
-            draw_rect = rect.move(0, y_offset)
-            scale = 1.0 + 0.035 * hover
-            scaled_rect = draw_rect.inflate(
-                int(draw_rect.width * (scale - 1)), int(draw_rect.height * (scale - 1))
-            )
-
-            base_color = settings.NEON_BLUE
-            hover_color = settings.NEON_GREEN
-            border_color = tuple(
-                int(base_color[c] + (hover_color[c] - base_color[c]) * hover) for c in range(3)
-            )
-
-            if hover > 0.01:
-                glow_surf = pygame.Surface((scaled_rect.width + 30, scaled_rect.height + 30), pygame.SRCALPHA)
-                pygame.draw.rect(glow_surf, (*hover_color, int(70 * hover)), glow_surf.get_rect(), border_radius=18)
-                surface.blit(glow_surf, (scaled_rect.x - 15, scaled_rect.y - 15))
-
-            card_surf = pygame.Surface(scaled_rect.size, pygame.SRCALPHA)
-            pygame.draw.rect(card_surf, (15, 15, 35, alpha), card_surf.get_rect(), border_radius=14)
-            pygame.draw.rect(card_surf, (*border_color, alpha), card_surf.get_rect(), width=3, border_radius=14)
-            surface.blit(card_surf, scaled_rect.topleft)
-
-            # Simple glowing badge icon -- a ringed dot, colored to match
-            # the card's hover state, standing in for a per-upgrade icon.
-            icon_center = (scaled_rect.centerx, scaled_rect.y + 58)
-            icon_glow = pygame.Surface((70, 70), pygame.SRCALPHA)
-            pygame.draw.circle(icon_glow, (*border_color, int(60 * (0.5 + 0.5 * abs(math.sin(self.time_elapsed * 3 + i))))), (35, 35), 30)
-            surface.blit(icon_glow, (icon_center[0] - 35, icon_center[1] - 35))
-            pygame.draw.circle(surface, border_color, icon_center, 24, width=3)
-            pygame.draw.circle(surface, settings.WHITE, icon_center, 8)
-
-            label_surf = self.label_font.render(cfg["label"], True, settings.WHITE)
-            label_surf.set_alpha(alpha)
-            label_rect = label_surf.get_rect(center=(scaled_rect.centerx, scaled_rect.y + 118))
-            surface.blit(label_surf, label_rect)
-
-            desc_surf = self.desc_font.render(cfg["description"], True, (200, 210, 230))
-            desc_surf.set_alpha(alpha)
-            desc_rect = desc_surf.get_rect(center=(scaled_rect.centerx, scaled_rect.y + 150))
-            surface.blit(desc_surf, desc_rect)
-
-            pick_surf = self.desc_font.render("CLICK TO SELECT", True, border_color if hover > 0.3 else (110, 120, 150))
-            pick_surf.set_alpha(alpha)
-            pick_rect = pick_surf.get_rect(center=(scaled_rect.centerx, scaled_rect.bottom - 24))
-            surface.blit(pick_surf, pick_rect)
-
-        hint_surf = self.hint_font.render("Click a card to choose your reward", True, (150, 160, 190))
-        surface.blit(hint_surf, hint_surf.get_rect(center=(settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT - 40)))
 
 
 class GameOverScreen:

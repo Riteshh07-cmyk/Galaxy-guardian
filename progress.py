@@ -1,18 +1,14 @@
 import json
 import os
 
-import settings
-
-PROGRESS_PATH = settings.PROGRESS_SAVE_PATH
+PROGRESS_PATH = "progress.json"
 
 DEFAULT_PROGRESS = {
     "credits": 0,
     "unlocked_ships": ["guardian"],
     "selected_ship": "guardian",
     "difficulty": "normal",
-    "fullscreen": False,
-    "master_volume": 0.6,
-    "gesture_sensitivity": 0.45,
+    "upgrades": {"hull": 0, "damage": 0, "firerate": 0, "shield": 0},
 }
 
 

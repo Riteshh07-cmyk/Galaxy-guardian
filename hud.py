@@ -108,7 +108,7 @@ class HUD:
         pct_surf = self.pct_font.render(pct_text, True, settings.WHITE)
         surface.blit(pct_surf, (bar_x + BAR_WIDTH + 10, y + BAR_HEIGHT // 2 - pct_surf.get_height() // 2))
 
-    def draw(self, surface, player, score, level, credits_amount):
+    def draw(self, surface, player, score, level, credits_amount, combo_count=0):
         y = PANEL_Y + 20
 
         # --- Health bar ---
@@ -187,6 +187,17 @@ class HUD:
         stat_text = f"SCORE {score:,}   *   LV.{level}   *   {credits_amount:,} CR"
         stat_surf = self.stat_font.render(stat_text, True, settings.GOLD)
         surface.blit(stat_surf, (PANEL_X, y))
+
+        # --- Kill combo streak (UPGRADE) -- shows the live score
+        # multiplier so chaining kills quickly visibly pays off. ---
+        if combo_count > 1:
+            combo_mult = 1.0 + min(combo_count, 20) * 0.05
+            pulse = 0.8 + 0.2 * abs(math.sin(self.time_elapsed * 10))
+            combo_color = tuple(int(c * pulse) for c in settings.NEON_GREEN)
+            combo_surf = self.stat_font.render(
+                f"COMBO x{combo_count}  ({combo_mult:.2f}x SCORE)", True, combo_color
+            )
+            surface.blit(combo_surf, (PANEL_X, y + 26))
 
         # --- Low HP warning banner ---
         if low_hp:
